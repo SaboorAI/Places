@@ -58,6 +58,7 @@ const DATA_MODEL_CONFIG =
     : {};
 const STATUS_DEFAULT =
   "Paste notes with cities/countries. The app will auto-pin confident matches and ask review for uncertain ones.";
+const RELATIONSHIP_TYPES = ["visit", "lived", "studied", "work"];
 const IMPORT_DELAY_MS = Number(IMPORTER_CONFIG.requestDelayMs) > 0 ? Number(IMPORTER_CONFIG.requestDelayMs) : 180;
 const GEOCODER_MAX_RETRIES =
   Number(IMPORTER_CONFIG.geocoderMaxRetries) > 0 ? Number(IMPORTER_CONFIG.geocoderMaxRetries) : 3;
@@ -337,7 +338,14 @@ function App() {
   const [mapFocus, setMapFocus] = useState(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState("");
   const [editingPlaceId, setEditingPlaceId] = useState("");
-  const [editDraft, setEditDraft] = useState({ name: "", notes: "" });
+  const [editDraft, setEditDraft] = useState({
+    name: "",
+    notes: "",
+    relationshipType: "visit",
+    startDate: "",
+    endDate: "",
+    tagsText: ""
+  });
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [dataModelSummary, setDataModelSummary] = useState("");
   const [eventAnalytics, setEventAnalytics] = useState(null);
@@ -624,13 +632,24 @@ function App() {
     setEditingPlaceId(place.id);
     setEditDraft({
       name: place.name || "",
-      notes: place.notes || ""
+      notes: place.notes || "",
+      relationshipType: sanitizeRelationshipType(place.relationshipType || "visit"),
+      startDate: sanitizeEditableDate(place.startDate || ""),
+      endDate: sanitizeEditableDate(place.endDate || ""),
+      tagsText: Array.isArray(place.tags) ? place.tags.join(", ") : ""
     });
   }
 
   function cancelEditPlace() {
     setEditingPlaceId("");
-    setEditDraft({ name: "", notes: "" });
+    setEditDraft({
+      name: "",
+      notes: "",
+      relationshipType: "visit",
+      startDate: "",
+      endDate: "",
+      tagsText: ""
+    });
   }
 
   async function saveEditPlace(id) {
@@ -641,6 +660,14 @@ function App() {
     }
 
     const nextNotes = String(editDraft.notes || "").trim();
+    const nextRelationshipType = sanitizeRelationshipType(editDraft.relationshipType || "visit");
+    const normalizedDateRange = normalizeDateRange(
+      sanitizeEditableDate(editDraft.startDate || ""),
+      sanitizeEditableDate(editDraft.endDate || "")
+    );
+    const nextStartDate = normalizedDateRange.startDate;
+    const nextEndDate = normalizedDateRange.endDate;
+    const nextTags = parseTagsInput(editDraft.tagsText || "");
     const current = places.find((place) => place.id === id);
     if (!current) {
       cancelEditPlace();
@@ -655,7 +682,11 @@ function App() {
             ? {
                 ...place,
                 name: nextName,
-                notes: nextNotes
+                notes: nextNotes,
+                relationshipType: nextRelationshipType,
+                startDate: nextStartDate,
+                endDate: nextEndDate,
+                tags: nextTags
               }
             : place
         )
@@ -679,6 +710,10 @@ function App() {
                   ...place,
                   name: nextName,
                   notes: nextNotes,
+                  relationshipType: nextRelationshipType,
+                  startDate: nextStartDate,
+                  endDate: nextEndDate,
+                  tags: nextTags,
                   query: nextName
                 }
               : place
@@ -697,6 +732,10 @@ function App() {
                 ...place,
                 name: nextName,
                 notes: nextNotes,
+                relationshipType: nextRelationshipType,
+                startDate: nextStartDate,
+                endDate: nextEndDate,
+                tags: nextTags,
                 fullName: best.fullName || place.fullName,
                 lat: best.lat,
                 lng: best.lng,
@@ -733,6 +772,10 @@ function App() {
                 ...place,
                 name: nextName,
                 notes: nextNotes,
+                relationshipType: nextRelationshipType,
+                startDate: nextStartDate,
+                endDate: nextEndDate,
+                tags: nextTags,
                 query: nextName
               }
             : place
@@ -1314,6 +1357,53 @@ function App() {
                           rows={2}
                           disabled={isSavingEdit}
                         />
+                        <div className="place-edit-meta-grid">
+                          <select
+                            value={editDraft.relationshipType}
+                            onChange={(event) =>
+                              setEditDraft((prev) => ({
+                                ...prev,
+                                relationshipType: event.target.value
+                              }))
+                            }
+                            disabled={isSavingEdit}
+                            aria-label="Relationship type"
+                          >
+                            {RELATIONSHIP_TYPES.map((type) => (
+                              <option key={`edit-type-${type}`} value={type}>
+                                {relationshipLabel(type)}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="date"
+                            value={editDraft.startDate}
+                            onChange={(event) =>
+                              setEditDraft((prev) => ({ ...prev, startDate: event.target.value }))
+                            }
+                            disabled={isSavingEdit}
+                            aria-label="Start date"
+                          />
+                          <input
+                            type="date"
+                            value={editDraft.endDate}
+                            onChange={(event) =>
+                              setEditDraft((prev) => ({ ...prev, endDate: event.target.value }))
+                            }
+                            disabled={isSavingEdit}
+                            aria-label="End date"
+                          />
+                          <input
+                            type="text"
+                            value={editDraft.tagsText}
+                            onChange={(event) =>
+                              setEditDraft((prev) => ({ ...prev, tagsText: event.target.value }))
+                            }
+                            placeholder="Tags (comma separated)"
+                            disabled={isSavingEdit}
+                            aria-label="Tags"
+                          />
+                        </div>
                         <div className="place-edit-actions">
                           <button
                             type="button"
@@ -2842,7 +2932,7 @@ function toPlace(suggestion, mention) {
     userId: "",
     cityId: "",
     tripId: null,
-    relationshipType: "",
+    relationshipType: "visit",
     startDate: "",
     endDate: "",
     tags: [],
@@ -3046,6 +3136,53 @@ function formatEventDateRange(startDate, endDate) {
   if (start && !end) return `${start} onward`;
   if (!start && end) return `Until ${end}`;
   return "Undated";
+}
+
+function sanitizeRelationshipType(value) {
+  const key = String(value || "")
+    .trim()
+    .toLowerCase();
+  return RELATIONSHIP_TYPES.includes(key) ? key : "visit";
+}
+
+function sanitizeEditableDate(value) {
+  const raw = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "";
+}
+
+function parseTagsInput(value) {
+  const seen = new Set();
+  const tags = [];
+
+  for (const part of String(value || "").split(/[,;\n]+/g)) {
+    const tag = String(part || "").trim();
+    if (!tag) continue;
+
+    const key = normalizeCompare(tag);
+    if (!key || seen.has(key)) continue;
+
+    seen.add(key);
+    tags.push(tag);
+  }
+
+  return tags;
+}
+
+function normalizeDateRange(startDate, endDate) {
+  const start = sanitizeEditableDate(startDate);
+  const end = sanitizeEditableDate(endDate);
+
+  if (start && end && end < start) {
+    return {
+      startDate: start,
+      endDate: start
+    };
+  }
+
+  return {
+    startDate: start,
+    endDate: end
+  };
 }
 
 function getGlobeStyle(styleId) {
@@ -3305,9 +3442,9 @@ function sanitizePlacesForStorage(value) {
         userId: String(place.userId || ""),
         cityId: String(place.cityId || ""),
         tripId: place.tripId ? String(place.tripId || "") : null,
-        relationshipType: String(place.relationshipType || ""),
-        startDate: String(place.startDate || ""),
-        endDate: String(place.endDate || ""),
+        relationshipType: sanitizeRelationshipType(place.relationshipType || "visit"),
+        startDate: sanitizeEditableDate(place.startDate || ""),
+        endDate: sanitizeEditableDate(place.endDate || ""),
         tags: Array.isArray(place.tags)
           ? place.tags.map((tag) => String(tag || "").trim()).filter(Boolean)
           : [],

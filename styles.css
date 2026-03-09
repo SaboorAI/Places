@@ -288,6 +288,7 @@ button.secondary {
 .review-item select,
 .places-filter,
 .place-edit input,
+.place-edit select,
 .place-edit textarea {
   width: 100%;
   border: 1px solid var(--border);
@@ -423,6 +424,16 @@ button.secondary {
   width: 100%;
   display: grid;
   gap: 0.4rem;
+}
+
+.place-edit-meta-grid {
+  display: grid;
+  gap: 0.36rem;
+  grid-template-columns: 1fr 1fr;
+}
+
+.place-edit-meta-grid input[type="text"] {
+  grid-column: 1 / -1;
 }
 
 .place-edit textarea {
@@ -776,6 +787,10 @@ button.secondary {
   .review-actions,
   .place-edit-actions {
     flex-wrap: wrap;
+  }
+
+  .place-edit-meta-grid {
+    grid-template-columns: 1fr;
   }
 
   .globe-detail-card {
