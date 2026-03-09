@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "users": [
+    {
+      "id": "user_saboor",
+      "name": "Saboor",
+      "homeCityId": "city_leesburg_us"
+    }
+  ]
+}

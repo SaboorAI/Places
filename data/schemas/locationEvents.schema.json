@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://places.local/schemas/locationEvents.schema.json",
+  "title": "Location Events Dataset",
+  "type": "object",
+  "required": ["locationEvents"],
+  "properties": {
+    "version": {
+      "type": "string"
+    },
+    "locationEvents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "userId", "cityId", "type"],
+        "properties": {
+          "id": { "type": "string" },
+          "userId": { "type": "string" },
+          "cityId": { "type": "string" },
+          "tripId": { "type": ["string", "null"] },
+          "type": {
+            "type": "string",
+            "enum": ["visit", "lived", "studied", "work"]
+          },
+          "startDate": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "endDate": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "notes": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

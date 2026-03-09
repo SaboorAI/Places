@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://places.local/schemas/cities.schema.json",
+  "title": "Cities Dataset",
+  "type": "object",
+  "required": ["cities"],
+  "properties": {
+    "version": {
+      "type": "string"
+    },
+    "cities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "country", "lat", "lon"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "country": { "type": "string" },
+          "countryCode": { "type": "string", "minLength": 2, "maxLength": 2 },
+          "continent": { "type": "string" },
+          "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+          "lon": { "type": "number", "minimum": -180, "maximum": 180 }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

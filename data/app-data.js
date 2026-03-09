@@ -1,7 +1,17 @@
-// App-level config separated from runtime logic (app.js).
+// App-level config separated from runtime logic (src/app.js).
 // This file is safe to edit for tuning parsing/matching behavior.
 
 const APP_CONFIG = {
+  dataModel: {
+    enabled: true,
+    basePath: "data",
+    // If true, locationEvents seed the map only when local storage is empty.
+    seedFromEventsOnEmpty: true,
+    // If true, keep local places and append event-driven places.
+    mergeWithLocal: false,
+    // Leave blank to use first user in users.json.
+    eventUserId: "user_saboor"
+  },
   importer: {
     requestDelayMs: 180,
     geocoderMaxRetries: 3,

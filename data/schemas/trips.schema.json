@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://places.local/schemas/trips.schema.json",
+  "title": "Trips Dataset",
+  "type": "object",
+  "required": ["trips"],
+  "properties": {
+    "version": {
+      "type": "string"
+    },
+    "trips": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "userId", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "userId": { "type": "string" },
+          "name": { "type": "string" },
+          "startDate": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "endDate": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

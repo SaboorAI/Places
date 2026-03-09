@@ -1,0 +1,95 @@
+{
+  "version": "1.0.0",
+  "cities": [
+    {
+      "id": "city_leesburg_us",
+      "name": "Leesburg",
+      "country": "United States",
+      "countryCode": "US",
+      "continent": "North America",
+      "lat": 39.1157,
+      "lon": -77.5636
+    },
+    {
+      "id": "city_washington_dc_us",
+      "name": "Washington",
+      "country": "United States",
+      "countryCode": "US",
+      "continent": "North America",
+      "lat": 38.9072,
+      "lon": -77.0369
+    },
+    {
+      "id": "city_nashville_us",
+      "name": "Nashville",
+      "country": "United States",
+      "countryCode": "US",
+      "continent": "North America",
+      "lat": 36.1627,
+      "lon": -86.7816
+    },
+    {
+      "id": "city_newyork_us",
+      "name": "New York City",
+      "country": "United States",
+      "countryCode": "US",
+      "continent": "North America",
+      "lat": 40.7128,
+      "lon": -74.006
+    },
+    {
+      "id": "city_paris_fr",
+      "name": "Paris",
+      "country": "France",
+      "countryCode": "FR",
+      "continent": "Europe",
+      "lat": 48.8566,
+      "lon": 2.3522
+    },
+    {
+      "id": "city_tokyo_jp",
+      "name": "Tokyo",
+      "country": "Japan",
+      "countryCode": "JP",
+      "continent": "Asia",
+      "lat": 35.6762,
+      "lon": 139.6503
+    },
+    {
+      "id": "city_dubai_ae",
+      "name": "Dubai",
+      "country": "United Arab Emirates",
+      "countryCode": "AE",
+      "continent": "Asia",
+      "lat": 25.2048,
+      "lon": 55.2708
+    },
+    {
+      "id": "city_toronto_ca",
+      "name": "Toronto",
+      "country": "Canada",
+      "countryCode": "CA",
+      "continent": "North America",
+      "lat": 43.6532,
+      "lon": -79.3832
+    },
+    {
+      "id": "city_lahore_pk",
+      "name": "Lahore",
+      "country": "Pakistan",
+      "countryCode": "PK",
+      "continent": "Asia",
+      "lat": 31.5497,
+      "lon": 74.3436
+    },
+    {
+      "id": "city_casablanca_ma",
+      "name": "Casablanca",
+      "country": "Morocco",
+      "countryCode": "MA",
+      "continent": "Africa",
+      "lat": 33.5731,
+      "lon": -7.5898
+    }
+  ]
+}

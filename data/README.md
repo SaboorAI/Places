@@ -1,18 +1,30 @@
-# App Data Folder
+# Data Layer
 
-This folder contains editable app/user config so deployment is easier to manage.
+This folder contains both structured JSON entities and runtime config.
 
-## Files
-- `app-data.js`: Runtime tuning for importer/parser/geocoder and continent color/group behavior.
-- `user-data.js`: User-owned storage keys, legacy migration keys, and optional starter user defaults.
+## JSON entities
+- `cities.json`
+- `users.json`
+- `trips.json`
+- `locationEvents.json`
+- `schemas/*.schema.json` (optional validation contracts)
+
+`locationEvents.json` is the timeline core:
+- `type` (`visit`, `lived`, `studied`, `work`)
+- `startDate` and `endDate`
+- optional `tripId`, `tags`, `notes`
+
+## Config files
+- `app-data.js`: parser/import/geocoder tuning, event bootstrap settings, visual grouping colors.
+- `user-data.js`: local storage keys, migration keys, and user defaults.
 
 ## Typical edits before going live
+- Replace sample rows in JSON files with your own production data.
+- Tune data bootstrap behavior in `app-data.js`:
+  - `dataModel.seedFromEventsOnEmpty`
+  - `dataModel.mergeWithLocal`
+  - `dataModel.eventUserId`
 - Tune importer behavior in `app-data.js`:
   - `importer.requestDelayMs`
   - `importer.autoApproveScore`
   - `importer.nominatimMinIntervalMs`
-- Set list grouping colors in `continents.colors`.
-- Keep user data persistence separate with `USER_STORAGE_KEYS` (places, input draft, filter, preferences).
-- Keep starter data empty for production (`USER_DEFAULTS.initialPlaces = []`).
-
-The runtime logic stays in `/Users/alienship/Documents/Playground/app.js`.

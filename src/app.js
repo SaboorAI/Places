@@ -52,6 +52,10 @@ const CONTINENT_CONFIG =
   EXTERNAL_APP_CONFIG.continents && typeof EXTERNAL_APP_CONFIG.continents === "object"
     ? EXTERNAL_APP_CONFIG.continents
     : {};
+const DATA_MODEL_CONFIG =
+  EXTERNAL_APP_CONFIG.dataModel && typeof EXTERNAL_APP_CONFIG.dataModel === "object"
+    ? EXTERNAL_APP_CONFIG.dataModel
+    : {};
 const STATUS_DEFAULT =
   "Paste notes with cities/countries. The app will auto-pin confident matches and ask review for uncertain ones.";
 const IMPORT_DELAY_MS = Number(IMPORTER_CONFIG.requestDelayMs) > 0 ? Number(IMPORTER_CONFIG.requestDelayMs) : 180;
@@ -84,6 +88,11 @@ const ORBITAL_PIXEL_RATIO_CAP_SATELLITE = 1.45;
 
 const geocodeCache = new Map();
 let nominatimNextAllowedAt = 0;
+const DATA_MODEL_BOOTSTRAP_ENABLED = DATA_MODEL_CONFIG.enabled !== false;
+const DATA_MODEL_BASE_PATH = String(DATA_MODEL_CONFIG.basePath || "data");
+const DATA_MODEL_SEED_ON_EMPTY = DATA_MODEL_CONFIG.seedFromEventsOnEmpty !== false;
+const DATA_MODEL_MERGE_WITH_LOCAL = DATA_MODEL_CONFIG.mergeWithLocal === true;
+const DATA_MODEL_USER_ID = String(DATA_MODEL_CONFIG.eventUserId || "").trim();
 
 const CONTINENT_HEADERS = new Set(
   Array.isArray(PARSER_CONFIG.continentHeaders) && PARSER_CONFIG.continentHeaders.length > 0
@@ -330,7 +339,10 @@ function App() {
   const [editingPlaceId, setEditingPlaceId] = useState("");
   const [editDraft, setEditDraft] = useState({ name: "", notes: "" });
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [dataModelSummary, setDataModelSummary] = useState("");
+  const [eventAnalytics, setEventAnalytics] = useState(null);
   const placeListScrollTimerRef = useRef(0);
+  const dataBootstrapStartedRef = useRef(false);
 
   const sortedPlaces = useMemo(
     () => [...places].sort((a, b) => a.name.localeCompare(b.name)),
@@ -344,6 +356,8 @@ function App() {
         text: normalizeCompare(
           `${place.name} ${place.fullName} ${place.country || ""} ` +
             `${place.countryCode || ""} ${place.continent || ""} ` +
+            `${place.relationshipType || ""} ${place.startDate || ""} ${place.endDate || ""} ` +
+            `${Array.isArray(place.tags) ? place.tags.join(" ") : ""} ` +
             `${place.source} ${place.query} ${place.notes || ""}`
         )
       })),
@@ -366,6 +380,69 @@ function App() {
   useEffect(() => {
     saveUserPreferences({ groupMode, mapStyle, pathMode, mapShape });
   }, [groupMode, mapStyle, pathMode, mapShape]);
+
+  useEffect(() => {
+    if (!DATA_MODEL_BOOTSTRAP_ENABLED) return;
+    if (dataBootstrapStartedRef.current) return;
+    dataBootstrapStartedRef.current = true;
+    if (!window.TravelDataModel || typeof window.TravelDataModel.loadModel !== "function") {
+      setDataModelSummary("Data model loader unavailable.");
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const model = await window.TravelDataModel.loadModel({ basePath: DATA_MODEL_BASE_PATH });
+        if (cancelled) return;
+
+        const resolvedUserId =
+          DATA_MODEL_USER_ID || String(model.users?.[0]?.id || "").trim();
+
+        if (!resolvedUserId) {
+          setDataModelSummary("Data loaded (no user found in users.json).");
+          return;
+        }
+
+        const user = model.users.find((entry) => entry.id === resolvedUserId) || null;
+        const eventPlaces = window.TravelDataModel.buildUserPlaces(model, resolvedUserId);
+        const analytics = window.TravelDataModel.computeAnalytics(model, resolvedUserId);
+
+        setEventAnalytics(analytics);
+        setDataModelSummary(
+          `Data-driven mode: ${eventPlaces.length} event locations for ${user ? user.name : resolvedUserId}.`
+        );
+
+        if (eventPlaces.length === 0) return;
+
+        commitPlaces((prev) => {
+          const hasExisting = Array.isArray(prev) && prev.length > 0;
+
+          if (DATA_MODEL_SEED_ON_EMPTY && hasExisting && !DATA_MODEL_MERGE_WITH_LOCAL) {
+            return prev;
+          }
+
+          if (DATA_MODEL_MERGE_WITH_LOCAL) {
+            return mergePlaces(prev, eventPlaces);
+          }
+
+          return mergePlaces([], eventPlaces);
+        });
+      } catch (error) {
+        if (cancelled) return;
+        const message =
+          error && typeof error.message === "string" && error.message
+            ? error.message
+            : "Failed to load data model JSON files.";
+        setDataModelSummary(`Data model load failed: ${message}`);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(
     () => () => {
@@ -910,12 +987,19 @@ function App() {
           Paste mixed travel notes. The importer extracts places, applies country/state context, and
           geocodes dynamically.
         </p>
+        {dataModelSummary && <p className="subtitle">{dataModelSummary}</p>}
 
         <section className="view-options">
           <div className="stats-row">
             <span className="stat-chip">Imported: {places.length}</span>
             <span className="stat-chip">Review: {reviewQueue.length}</span>
             <span className="stat-chip">Unmatched: {unmatchedQueue.length}</span>
+            {eventAnalytics && (
+              <>
+                <span className="stat-chip">Events: {eventAnalytics.totalEvents}</span>
+                <span className="stat-chip">Countries: {eventAnalytics.totalCountries}</span>
+              </>
+            )}
           </div>
 
           <div className="option-grid">
@@ -1255,6 +1339,12 @@ function App() {
                             {place.name}
                           </span>
                           <span className="place-meta">{place.country || "Unknown country"}</span>
+                          {place.relationshipType && (
+                            <span className="place-meta">
+                              {relationshipLabel(place.relationshipType)} |{" "}
+                              {formatEventDateRange(place.startDate, place.endDate)}
+                            </span>
+                          )}
                           {place.notes && (
                             <span className="place-note" title={place.notes}>
                               {place.notes}
@@ -1399,9 +1489,10 @@ function LeafletMap({ places, focusTarget, mapStyle, pathMode, selectedPlaceId, 
     const pointPlaces = getPointPlaces(places);
 
     const bounds = [];
-    const markerRadius = 6;
 
     for (const place of pointPlaces) {
+      const relationshipStyle = getRelationshipVisualStyle(place.relationshipType);
+      const markerRadius = relationshipStyle.leafletRadius;
       const color = colorForPlace(place);
       const hoverDetails = buildHoverTooltip(place);
       const marker = L.circleMarker([place.lat, place.lng], {
@@ -1788,15 +1879,18 @@ function GlobeMap({ places, focusTarget, mapStyle, pathMode, selectedPlaceId, on
     if (!globe) return;
 
     const style = getGlobeStyle(mapStyle);
-    const points = pointPlaces.map((place) => ({
-      placeId: place.id,
-      lat: Number(place.lat),
-      lng: Number(place.lng),
-      color: colorForPlace(place),
-      altitude: 0.016,
-      radius: 0.3,
-      label: buildGlobeLabel(place)
-    }));
+    const points = pointPlaces.map((place) => {
+      const relationshipStyle = getRelationshipVisualStyle(place.relationshipType);
+      return {
+        placeId: place.id,
+        lat: Number(place.lat),
+        lng: Number(place.lng),
+        color: colorForPlace(place),
+        altitude: relationshipStyle.globeAltitude,
+        radius: relationshipStyle.globeRadius,
+        label: buildGlobeLabel(place)
+      };
+    });
 
     const connections = buildConnectionPairs(pointPlaces, pathMode);
     const arcs = connections.map(({ from, to }) => ({
@@ -2744,6 +2838,14 @@ function toPlace(suggestion, mention) {
     inferContinent(country, suggestion.countryCode, suggestion.lat, suggestion.lng);
   return {
     id: crypto.randomUUID(),
+    eventId: "",
+    userId: "",
+    cityId: "",
+    tripId: null,
+    relationshipType: "",
+    startDate: "",
+    endDate: "",
+    tags: [],
     name: suggestion.name,
     fullName: suggestion.fullName,
     lat: suggestion.lat,
@@ -2773,6 +2875,9 @@ function mergePlaces(existing, incoming) {
 }
 
 function placeKey(place) {
+  if (place && place.eventId) {
+    return `event:${String(place.eventId)}`;
+  }
   return `${normalizeCompare(place.fullName || place.name)}|${Number(place.lat).toFixed(3)}|${Number(place.lng).toFixed(3)}`;
 }
 
@@ -2901,6 +3006,48 @@ function colorForPlace(place) {
   return CONTINENT_COLORS[continent] || CONTINENT_COLORS["Other / Unknown"];
 }
 
+function getRelationshipVisualStyle(type) {
+  if (
+    window.GlobeHelpers &&
+    typeof window.GlobeHelpers.relationshipStyle === "function"
+  ) {
+    return window.GlobeHelpers.relationshipStyle(type);
+  }
+
+  const key = String(type || "").toLowerCase();
+  if (key === "lived") {
+    return { label: "Lived", leafletRadius: 8, globeRadius: 0.42, globeAltitude: 0.022 };
+  }
+  if (key === "studied") {
+    return { label: "Studied", leafletRadius: 7.2, globeRadius: 0.36, globeAltitude: 0.02 };
+  }
+  if (key === "work") {
+    return { label: "Work", leafletRadius: 6.8, globeRadius: 0.34, globeAltitude: 0.019 };
+  }
+  return { label: "Visit", leafletRadius: 6, globeRadius: 0.3, globeAltitude: 0.016 };
+}
+
+function relationshipLabel(type) {
+  if (window.UiHelpers && typeof window.UiHelpers.relationshipLabel === "function") {
+    return window.UiHelpers.relationshipLabel(type);
+  }
+  const style = getRelationshipVisualStyle(type);
+  return style.label || "Visit";
+}
+
+function formatEventDateRange(startDate, endDate) {
+  if (window.UiHelpers && typeof window.UiHelpers.formatDateRange === "function") {
+    return window.UiHelpers.formatDateRange(startDate, endDate);
+  }
+  const start = String(startDate || "").trim();
+  const end = String(endDate || "").trim();
+  if (start && end && start !== end) return `${start} to ${end}`;
+  if (start && end && start === end) return start;
+  if (start && !end) return `${start} onward`;
+  if (!start && end) return `Until ${end}`;
+  return "Undated";
+}
+
 function getGlobeStyle(styleId) {
   return GLOBE_STYLE_CONFIG[styleId] || GLOBE_STYLE_CONFIG.dark;
 }
@@ -2915,7 +3062,7 @@ function buildConnectionPairs(pointPlaces, pathMode) {
     return pointPlaces.slice(1).map((target) => ({ from: hub, to: target }));
   }
 
-  const sorted = [...pointPlaces].sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = [...pointPlaces].sort(comparePlacesForTimeline);
   const pairs = [];
 
   for (let i = 1; i < sorted.length; i += 1) {
@@ -2923,6 +3070,24 @@ function buildConnectionPairs(pointPlaces, pathMode) {
   }
 
   return pairs;
+}
+
+function comparePlacesForTimeline(a, b) {
+  const aStart = normalizeTimelineDate(a.startDate, "9999-12-31");
+  const bStart = normalizeTimelineDate(b.startDate, "9999-12-31");
+  if (aStart !== bStart) return aStart.localeCompare(bStart);
+
+  const aEnd = normalizeTimelineDate(a.endDate || a.startDate, aStart);
+  const bEnd = normalizeTimelineDate(b.endDate || b.startDate, bStart);
+  if (aEnd !== bEnd) return aEnd.localeCompare(bEnd);
+
+  return String(a.name || "").localeCompare(String(b.name || ""));
+}
+
+function normalizeTimelineDate(value, fallback) {
+  const raw = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return fallback;
 }
 
 function hasFiniteCoordinates(lat, lng) {
@@ -3060,10 +3225,15 @@ function arcAltitudeForPlaces(fromPlace, toPlace) {
 function buildGlobeLabel(place) {
   const title = escapeHtml(place.name);
   const location = escapeHtml(place.fullName || place.name);
+  const relationship = place.relationshipType
+    ? `<br/><span style="opacity:.9;">${escapeHtml(
+        relationshipLabel(place.relationshipType)
+      )} · ${escapeHtml(formatEventDateRange(place.startDate, place.endDate))}</span>`
+    : "";
   const notes = place.notes
     ? `<br/><span style="opacity:.86;">${escapeHtml(place.notes)}</span>`
     : "";
-  return `<div><strong>${title}</strong><br/>${location}${notes}</div>`;
+  return `<div><strong>${title}</strong><br/>${location}${relationship}${notes}</div>`;
 }
 
 function buildArcPoints(fromPlace, toPlace) {
@@ -3131,6 +3301,16 @@ function sanitizePlacesForStorage(value) {
 
       return {
         id: place.id || crypto.randomUUID(),
+        eventId: String(place.eventId || ""),
+        userId: String(place.userId || ""),
+        cityId: String(place.cityId || ""),
+        tripId: place.tripId ? String(place.tripId || "") : null,
+        relationshipType: String(place.relationshipType || ""),
+        startDate: String(place.startDate || ""),
+        endDate: String(place.endDate || ""),
+        tags: Array.isArray(place.tags)
+          ? place.tags.map((tag) => String(tag || "").trim()).filter(Boolean)
+          : [],
         name: String(place.name || ""),
         fullName,
         lat,
@@ -3398,19 +3578,33 @@ function escapeHtml(value) {
 function buildPlacePopup(place) {
   const title = `<strong>${escapeHtml(place.name)}</strong>`;
   const location = escapeHtml(place.fullName || place.name);
+  const relationship = place.relationshipType
+    ? `<br/><small>${escapeHtml(relationshipLabel(place.relationshipType))} · ${escapeHtml(
+        formatEventDateRange(place.startDate, place.endDate)
+      )}</small>`
+    : "";
+  const tags =
+    Array.isArray(place.tags) && place.tags.length > 0
+      ? `<br/><small>${escapeHtml(place.tags.join(", "))}</small>`
+      : "";
   const notes = place.notes
     ? `<br/><small>${escapeHtml(place.notes)}</small>`
     : "";
-  return `${title}<br/>${location}${notes}`;
+  return `${title}<br/>${location}${relationship}${tags}${notes}`;
 }
 
 function buildHoverTooltip(place) {
   const title = `<strong>${escapeHtml(place.name)}</strong>`;
   const location = `<span>${escapeHtml(place.fullName || place.name)}</span>`;
+  const relationship = place.relationshipType
+    ? `<span>${escapeHtml(relationshipLabel(place.relationshipType))} · ${escapeHtml(
+        formatEventDateRange(place.startDate, place.endDate)
+      )}</span>`
+    : "";
   const notes = place.notes
     ? `<span class="tooltip-note">${escapeHtml(place.notes)}</span>`
     : "";
-  return `${title}<br/>${location}${notes}`;
+  return `${title}<br/>${location}${relationship}${notes}`;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);

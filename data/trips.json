@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "trips": [
+    {
+      "id": "trip_europe_2023",
+      "userId": "user_saboor",
+      "name": "Europe Multi-City",
+      "startDate": "2023-06-10",
+      "endDate": "2023-06-23"
+    },
+    {
+      "id": "trip_japan_2024",
+      "userId": "user_saboor",
+      "name": "Japan Week",
+      "startDate": "2024-04-04",
+      "endDate": "2024-04-11"
+    },
+    {
+      "id": "trip_canada_2024",
+      "userId": "user_saboor",
+      "name": "Toronto Weekend",
+      "startDate": "2024-09-13",
+      "endDate": "2024-09-16"
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "version": "1.0.0",
+  "locationEvents": [
+    {
+      "id": "event_home_nova",
+      "userId": "user_saboor",
+      "cityId": "city_leesburg_us",
+      "tripId": null,
+      "type": "lived",
+      "startDate": "2010-01-01",
+      "endDate": null,
+      "tags": ["home", "dmv"],
+      "notes": "Primary home base."
+    },
+    {
+      "id": "event_nashville_study",
+      "userId": "user_saboor",
+      "cityId": "city_nashville_us",
+      "tripId": null,
+      "type": "studied",
+      "startDate": "2018-08-20",
+      "endDate": "2022-05-15",
+      "tags": ["college", "long-stay"],
+      "notes": "University years."
+    },
+    {
+      "id": "event_nyc_recurring",
+      "userId": "user_saboor",
+      "cityId": "city_newyork_us",
+      "tripId": null,
+      "type": "visit",
+      "startDate": "2021-01-01",
+      "endDate": "2025-12-31",
+      "tags": ["recurring"],
+      "notes": "Many repeat visits across multiple years."
+    },
+    {
+      "id": "event_paris_trip",
+      "userId": "user_saboor",
+      "cityId": "city_paris_fr",
+      "tripId": "trip_europe_2023",
+      "type": "visit",
+      "startDate": "2023-06-12",
+      "endDate": "2023-06-15",
+      "tags": ["europe", "summer"],
+      "notes": "Paris leg of Europe trip."
+    },
+    {
+      "id": "event_tokyo_trip",
+      "userId": "user_saboor",
+      "cityId": "city_tokyo_jp",
+      "tripId": "trip_japan_2024",
+      "type": "visit",
+      "startDate": "2024-04-05",
+      "endDate": "2024-04-10",
+      "tags": ["japan"],
+      "notes": "Tokyo + nearby cities."
+    },
+    {
+      "id": "event_dubai_work",
+      "userId": "user_saboor",
+      "cityId": "city_dubai_ae",
+      "tripId": null,
+      "type": "work",
+      "startDate": "2024-11-01",
+      "endDate": "2024-11-14",
+      "tags": ["work", "middle-east"],
+      "notes": "Short work-focused stay."
+    },
+    {
+      "id": "event_toronto_trip",
+      "userId": "user_saboor",
+      "cityId": "city_toronto_ca",
+      "tripId": "trip_canada_2024",
+      "type": "visit",
+      "startDate": "2024-09-13",
+      "endDate": "2024-09-15",
+      "tags": ["canada"],
+      "notes": "Weekend city trip."
+    },
+    {
+      "id": "event_lahore_family",
+      "userId": "user_saboor",
+      "cityId": "city_lahore_pk",
+      "tripId": null,
+      "type": "visit",
+      "startDate": "2017-01-01",
+      "endDate": "2025-12-31",
+      "tags": ["family", "recurring"],
+      "notes": "Repeated family trips."
+    },
+    {
+      "id": "event_casablanca_trip",
+      "userId": "user_saboor",
+      "cityId": "city_casablanca_ma",
+      "tripId": null,
+      "type": "visit",
+      "startDate": "2022-03-10",
+      "endDate": "2022-03-13",
+      "tags": ["africa"],
+      "notes": "Short North Africa visit."
+    },
+    {
+      "id": "event_dc_working",
+      "userId": "user_saboor",
+      "cityId": "city_washington_dc_us",
+      "tripId": null,
+      "type": "work",
+      "startDate": "2020-01-01",
+      "endDate": "2025-12-31",
+      "tags": ["dmv", "recurring"],
+      "notes": "Frequent work activity in DC."
+    }
+  ]
+}
