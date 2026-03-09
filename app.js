@@ -36,13 +36,41 @@ const USER_DEFAULTS_CONFIG =
           mapShape: "orbital"
         }
       };
+const EXTERNAL_APP_CONFIG =
+  typeof APP_CONFIG !== "undefined" && APP_CONFIG && typeof APP_CONFIG === "object"
+    ? APP_CONFIG
+    : {};
+const IMPORTER_CONFIG =
+  EXTERNAL_APP_CONFIG.importer && typeof EXTERNAL_APP_CONFIG.importer === "object"
+    ? EXTERNAL_APP_CONFIG.importer
+    : {};
+const PARSER_CONFIG =
+  EXTERNAL_APP_CONFIG.parser && typeof EXTERNAL_APP_CONFIG.parser === "object"
+    ? EXTERNAL_APP_CONFIG.parser
+    : {};
+const CONTINENT_CONFIG =
+  EXTERNAL_APP_CONFIG.continents && typeof EXTERNAL_APP_CONFIG.continents === "object"
+    ? EXTERNAL_APP_CONFIG.continents
+    : {};
 const STATUS_DEFAULT =
   "Paste notes with cities/countries. The app will auto-pin confident matches and ask review for uncertain ones.";
-const IMPORT_DELAY_MS = 450;
-const GEOCODER_MAX_RETRIES = 3;
-const RETRY_BASE_DELAY_MS = 900;
-const GEOCODER_CACHE_TTL_MS = 1000 * 60 * 60 * 8;
-const GEOCODER_CACHE_MAX_ENTRIES = 450;
+const IMPORT_DELAY_MS = Number(IMPORTER_CONFIG.requestDelayMs) > 0 ? Number(IMPORTER_CONFIG.requestDelayMs) : 180;
+const GEOCODER_MAX_RETRIES =
+  Number(IMPORTER_CONFIG.geocoderMaxRetries) > 0 ? Number(IMPORTER_CONFIG.geocoderMaxRetries) : 3;
+const RETRY_BASE_DELAY_MS =
+  Number(IMPORTER_CONFIG.retryBaseDelayMs) > 0 ? Number(IMPORTER_CONFIG.retryBaseDelayMs) : 900;
+const GEOCODER_CACHE_TTL_MS =
+  Number(IMPORTER_CONFIG.cacheTtlMs) > 0 ? Number(IMPORTER_CONFIG.cacheTtlMs) : 1000 * 60 * 60 * 8;
+const GEOCODER_CACHE_MAX_ENTRIES =
+  Number(IMPORTER_CONFIG.cacheMaxEntries) > 0 ? Number(IMPORTER_CONFIG.cacheMaxEntries) : 500;
+const AUTO_APPROVE_MIN_SCORE =
+  Number(IMPORTER_CONFIG.autoApproveScore) > 0 ? Number(IMPORTER_CONFIG.autoApproveScore) : 0.8;
+const AUTO_APPROVE_MIN_LEAD =
+  Number(IMPORTER_CONFIG.autoApproveLead) > 0 ? Number(IMPORTER_CONFIG.autoApproveLead) : 0.12;
+const NOMINATIM_MIN_INTERVAL_MS =
+  Number(IMPORTER_CONFIG.nominatimMinIntervalMs) > 0
+    ? Number(IMPORTER_CONFIG.nominatimMinIntervalMs)
+    : 1100;
 const ORBITAL_ZOOM_MIN = 0.32;
 const ORBITAL_ZOOM_MAX = 4.2;
 const ORBITAL_ZOOM_DEFAULT = (ORBITAL_ZOOM_MIN + ORBITAL_ZOOM_MAX) / 2;
@@ -55,47 +83,34 @@ const ORBITAL_PIXEL_RATIO_CAP = 2;
 const ORBITAL_PIXEL_RATIO_CAP_SATELLITE = 1.45;
 
 const geocodeCache = new Map();
+let nominatimNextAllowedAt = 0;
 
-const CONTINENT_HEADERS = new Set([
-  "NORTH AMERICA",
-  "SOUTH AMERICA",
-  "EUROPE",
-  "ASIA",
-  "AFRICA",
-  "OCEANIA",
-  "AUSTRALIA",
-  "ANTARCTICA"
-]);
+const CONTINENT_HEADERS = new Set(
+  Array.isArray(PARSER_CONFIG.continentHeaders) && PARSER_CONFIG.continentHeaders.length > 0
+    ? PARSER_CONFIG.continentHeaders.map((item) => toHeader(item))
+    : [
+        "NORTH AMERICA",
+        "SOUTH AMERICA",
+        "EUROPE",
+        "ASIA",
+        "AFRICA",
+        "OCEANIA",
+        "AUSTRALIA",
+        "ANTARCTICA"
+      ]
+);
+const IGNORED_LINE_HEADERS = new Set(
+  Array.isArray(PARSER_CONFIG.ignoredHeaders) && PARSER_CONFIG.ignoredHeaders.length > 0
+    ? PARSER_CONFIG.ignoredHeaders.map((item) => toHeader(item))
+    : ["PLACES IVE BEEN", "HOME"]
+);
+const NOISE_TOKENS = new Set(
+  Array.isArray(PARSER_CONFIG.noiseTokens) && PARSER_CONFIG.noiseTokens.length > 0
+    ? PARSER_CONFIG.noiseTokens.map((item) => normalizeCompare(item))
+    : ["home", "others", "other"]
+);
 
-const COUNTRY_ALIASES = {
-  USA: "United States",
-  US: "United States",
-  "UNITED STATES": "United States",
-  MEXICO: "Mexico",
-  CANADA: "Canada",
-  BAHAMAS: "Bahamas",
-  "PUERTO RICO": "Puerto Rico",
-  BRAZIL: "Brazil",
-  FRANCE: "France",
-  SWITZERLAND: "Switzerland",
-  ITALY: "Italy",
-  ENGLAND: "England, United Kingdom",
-  SCOTLAND: "Scotland, United Kingdom",
-  TURKEY: "Turkey",
-  SPAIN: "Spain",
-  GREECE: "Greece",
-  PAKISTAN: "Pakistan",
-  "SAUDIA ARABIA": "Saudi Arabia",
-  "SAUDI ARABIA": "Saudi Arabia",
-  UAE: "United Arab Emirates",
-  "UNITED ARAB EMIRATES": "United Arab Emirates",
-  JAPAN: "Japan",
-  THAILAND: "Thailand",
-  MOROCCO: "Morocco",
-  EGYPT: "Egypt"
-};
-
-const STATE_ABBREVIATIONS = {
+const DEFAULT_STATE_ABBREVIATIONS = {
   AL: "Alabama",
   AZ: "Arizona",
   CA: "California",
@@ -126,17 +141,35 @@ const STATE_ABBREVIATIONS = {
   WI: "Wisconsin",
   WV: "West Virginia"
 };
-
-const PLACE_ALIASES = {
-  NYC: "New York City",
-  NOVA: "Northern Virginia",
-  DMV: "Washington metropolitan area",
-  OBX: "Outer Banks",
-  PITTSBURG: "Pittsburgh",
-  LUZERNE: "Lucerne",
-  "WEST VA": "West Virginia",
-  "UNIVERSITY, AL": "Tuscaloosa, Alabama"
+const STATE_ABBREVIATIONS = {
+  ...DEFAULT_STATE_ABBREVIATIONS,
+  ...(PARSER_CONFIG.stateAbbreviations && typeof PARSER_CONFIG.stateAbbreviations === "object"
+    ? PARSER_CONFIG.stateAbbreviations
+    : {})
 };
+const DEFAULT_PLACE_ALIASES = {};
+const PLACE_ALIASES = normalizeAliasObject({
+  ...DEFAULT_PLACE_ALIASES,
+  ...(PARSER_CONFIG.customPlaceAliases && typeof PARSER_CONFIG.customPlaceAliases === "object"
+    ? PARSER_CONFIG.customPlaceAliases
+    : {})
+});
+const DEFAULT_COUNTRY_ALIASES = {
+  USA: "United States",
+  US: "United States",
+  "UNITED STATES OF AMERICA": "United States",
+  UK: "United Kingdom",
+  UAE: "United Arab Emirates",
+  KSA: "Saudi Arabia",
+  "SAUDIA ARABIA": "Saudi Arabia"
+};
+const COUNTRY_ALIASES = normalizeAliasObject({
+  ...DEFAULT_COUNTRY_ALIASES,
+  ...(PARSER_CONFIG.customCountryAliases && typeof PARSER_CONFIG.customCountryAliases === "object"
+    ? PARSER_CONFIG.customCountryAliases
+    : {})
+});
+const COUNTRY_INDEX = buildCountryIndex(COUNTRY_ALIASES);
 
 const MAP_STYLE_CONFIG = {
   dark: {
@@ -248,28 +281,21 @@ const GLOBE_STYLE_CONFIG = {
 };
 
 const COUNTRY_TO_CONTINENT = {
-  "united states": "North America",
-  "puerto rico": "North America",
-  mexico: "North America",
-  canada: "North America",
-  bahamas: "North America",
-  brazil: "South America",
-  france: "Europe",
-  switzerland: "Europe",
-  italy: "Europe",
-  "united kingdom": "Europe",
   england: "Europe",
   scotland: "Europe",
-  spain: "Europe",
-  greece: "Europe",
-  turkey: "Asia",
-  pakistan: "Asia",
-  "saudi arabia": "Asia",
-  "united arab emirates": "Asia",
-  japan: "Asia",
-  thailand: "Asia",
-  morocco: "Africa",
-  egypt: "Africa"
+  wales: "Europe",
+  "northern ireland": "Europe",
+  ...(CONTINENT_CONFIG.countryNameOverrides &&
+  typeof CONTINENT_CONFIG.countryNameOverrides === "object"
+    ? CONTINENT_CONFIG.countryNameOverrides
+    : {})
+};
+const COUNTRY_CODE_TO_CONTINENT = {
+  AQ: "Antarctica",
+  ...(CONTINENT_CONFIG.countryCodeOverrides &&
+  typeof CONTINENT_CONFIG.countryCodeOverrides === "object"
+    ? CONTINENT_CONFIG.countryCodeOverrides
+    : {})
 };
 
 const CONTINENT_COLORS = {
@@ -279,7 +305,11 @@ const CONTINENT_COLORS = {
   Asia: "#ff9ecf",
   Africa: "#ffd166",
   Oceania: "#7de3ff",
-  "Other / Unknown": "#b7c4d3"
+  Antarctica: "#e2f0ff",
+  "Other / Unknown": "#b7c4d3",
+  ...(CONTINENT_CONFIG.colors && typeof CONTINENT_CONFIG.colors === "object"
+    ? CONTINENT_CONFIG.colors
+    : {})
 };
 
 function App() {
@@ -313,6 +343,7 @@ function App() {
         place,
         text: normalizeCompare(
           `${place.name} ${place.fullName} ${place.country || ""} ` +
+            `${place.countryCode || ""} ${place.continent || ""} ` +
             `${place.source} ${place.query} ${place.notes || ""}`
         )
       })),
@@ -416,8 +447,8 @@ function App() {
 
         const best = scored[0];
         const second = scored[1];
-        const strongEnough = best.score >= 0.8;
-        const clearLead = !second || best.score - second.score >= 0.15;
+        const strongEnough = best.score >= AUTO_APPROVE_MIN_SCORE;
+        const clearLead = !second || best.score - second.score >= AUTO_APPROVE_MIN_LEAD;
 
         if (strongEnough && clearLead) {
           const candidate = toPlace(best, mention);
@@ -593,6 +624,15 @@ function App() {
                 lat: best.lat,
                 lng: best.lng,
                 country: best.country || inferCountryFromFullName(best.fullName || place.fullName),
+                countryCode: String(best.countryCode || place.countryCode || "").toUpperCase(),
+                continent:
+                  best.continent ||
+                  inferContinent(
+                    best.country || place.country,
+                    best.countryCode || place.countryCode,
+                    best.lat,
+                    best.lng
+                  ),
                 query: nextName
               }
             : place
@@ -2024,8 +2064,7 @@ function normalizeInput(rawText) {
     .replace(/\r/g, "")
     .replace(/[\u2013\u2014]/g, "-")
     .replace(/[+&]/g, ",")
-    .replace(/\band\b/gi, ",")
-    .replace(/\|/g, ",");
+    .replace(/[;|]/g, ",");
 }
 
 function cleanLine(value) {
@@ -2040,8 +2079,8 @@ function cleanLine(value) {
 
 function isIgnoredLine(headerText) {
   if (!headerText) return true;
+  if (IGNORED_LINE_HEADERS.has(headerText)) return true;
   if (headerText.includes("PLACES IVE BEEN")) return true;
-  if (headerText === "HOME") return true;
   return false;
 }
 
@@ -2070,6 +2109,7 @@ function extractLineMentions(line, activeCountry) {
       const normalizedToken = normalizeToken(token);
       if (!normalizedToken) continue;
 
+      const tokenCountry = resolveCountry(normalizedToken);
       const contextFromToken = resolveContext(normalizedToken);
       let finalContext = context;
       let kind = "place";
@@ -2079,10 +2119,22 @@ function extractLineMentions(line, activeCountry) {
         finalContext = contextFromToken;
       }
 
-      if (resolveCountry(normalizedToken) && tokens.length === 1) {
+      const tokenMatchesContextCountry =
+        tokenCountry &&
+        finalContext &&
+        normalizeCompare(finalContext).includes(normalizeCompare(tokenCountry));
+
+      if (tokenCountry && tokens.length > 1 && (tokenMatchesContextCountry || finalContext)) {
+        if (!context) {
+          context = tokenCountry;
+        }
+        continue;
+      }
+
+      if (tokenCountry && tokens.length === 1) {
         kind = "country";
         finalContext = "";
-        query = resolveCountry(normalizedToken);
+        query = tokenCountry;
       } else if (finalContext) {
         query = `${normalizedToken}, ${finalContext}`;
       }
@@ -2156,7 +2208,7 @@ function extractLeadingContext(segment) {
 
 function splitPlaceTokens(text) {
   return String(text || "")
-    .split(",")
+    .split(/[,/]+/g)
     .map((part) => part.trim())
     .filter(Boolean)
     .filter((part) => !isNoiseToken(part));
@@ -2165,9 +2217,12 @@ function splitPlaceTokens(text) {
 function isNoiseToken(token) {
   const normalized = normalizeCompare(token);
   if (!normalized) return true;
-  if (normalized === "home") return true;
-  if (normalized === "others") return true;
-  if (normalized === "other") return true;
+  if (NOISE_TOKENS.has(normalized)) return true;
+  if (normalized === "x") return true;
+  if (normalized === "times") return true;
+  if (/^\d+$/.test(normalized)) return true;
+  if (/^\d+x$/.test(normalized)) return true;
+  if (normalized.startsWith("want to live")) return true;
   if (normalized.length < 2) return true;
   return false;
 }
@@ -2204,8 +2259,43 @@ function resolveContext(value) {
 }
 
 function resolveCountry(value) {
-  const upper = toHeader(value);
-  return COUNTRY_ALIASES[upper] || "";
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const upper = toHeader(raw);
+  if (COUNTRY_ALIASES[upper]) return COUNTRY_ALIASES[upper];
+
+  const normalized = normalizeCompare(raw);
+  if (!normalized) return "";
+
+  const resolved = COUNTRY_INDEX.byNormalized.get(normalized);
+  if (resolved) return resolved;
+
+  if (normalized.startsWith("the ")) {
+    return COUNTRY_INDEX.byNormalized.get(normalized.slice(4)) || "";
+  }
+
+  return "";
+}
+
+function inferCountryFromContext(context) {
+  const raw = String(context || "").trim();
+  if (!raw) return "";
+
+  const direct = resolveCountry(raw);
+  if (direct) return direct;
+
+  const parts = raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const country = resolveCountry(parts[i]);
+    if (country) return country;
+  }
+
+  return "";
 }
 
 function findNamedState(value) {
@@ -2269,37 +2359,63 @@ async function geocodeMentionScored(mention) {
 }
 
 async function geocodeMention(mention) {
-  const candidateQueries = [];
-  candidateQueries.push(mention.query);
-
-  if (mention.context) {
-    candidateQueries.push(`${mention.token}, ${mention.context}`);
-  }
-
-  if (mention.token !== mention.query) {
-    candidateQueries.push(mention.token);
-  }
-
-  const uniqueQueries = [...new Set(candidateQueries.filter(Boolean))];
+  const uniqueQueries = buildGeocodeQueries(mention);
 
   for (const query of uniqueQueries) {
     const cached = readGeocodeCache(query);
     if (cached) return cached;
 
     const openMeteo = await searchOpenMeteo(query);
-    if (openMeteo.length > 0) {
-      writeGeocodeCache(query, openMeteo);
-      return openMeteo;
+    let merged = openMeteo;
+
+    // Use Nominatim as fallback/enrichment only when Open-Meteo is sparse.
+    if (openMeteo.length < 2) {
+      const nominatim = await searchNominatim(query);
+      merged = dedupeSuggestions([...openMeteo, ...nominatim]);
     }
 
-    const nominatim = await searchNominatim(query);
-    if (nominatim.length > 0) {
-      writeGeocodeCache(query, nominatim);
-      return nominatim;
+    if (merged.length > 0) {
+      writeGeocodeCache(query, merged);
+      return merged;
     }
   }
 
   return [];
+}
+
+function buildGeocodeQueries(mention) {
+  const out = [];
+  const query = String(mention.query || "").trim();
+  const token = String(mention.token || "").trim();
+  const context = String(mention.context || "").trim();
+
+  if (query) out.push(query);
+  if (token && context) out.push(`${token}, ${context}`);
+  if (token && token !== query) out.push(token);
+
+  const resolvedCountry = resolveCountry(token);
+  if (resolvedCountry && resolvedCountry !== token) {
+    out.push(resolvedCountry);
+  }
+
+  return [...new Set(out.map((item) => item.trim()).filter(Boolean))];
+}
+
+function dedupeSuggestions(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+
+  const seen = new Set();
+  const out = [];
+
+  for (const option of candidates) {
+    if (!option) continue;
+    const key = `${normalizeCompare(option.fullName)}|${Number(option.lat).toFixed(3)}|${Number(option.lng).toFixed(3)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(option);
+  }
+
+  return out;
 }
 
 async function searchOpenMeteo(query) {
@@ -2313,9 +2429,16 @@ async function searchOpenMeteo(query) {
       format: "json"
     });
 
-    const response = await fetch(
-      `https://geocoding-api.open-meteo.com/v1/search?${params.toString()}`
-    );
+    let response = null;
+    try {
+      response = await fetch(
+        `https://geocoding-api.open-meteo.com/v1/search?${params.toString()}`
+      );
+    } catch {
+      if (attempt === GEOCODER_MAX_RETRIES - 1) break;
+      await sleep(RETRY_BASE_DELAY_MS * (attempt + 1));
+      continue;
+    }
 
     if (response.ok) {
       payload = await response.json();
@@ -2362,11 +2485,20 @@ async function searchNominatim(query) {
       "accept-language": "en"
     });
 
-    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
-      headers: {
-        Accept: "application/json"
-      }
-    });
+    await waitForNominatimWindow();
+
+    let response = null;
+    try {
+      response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+        headers: {
+          Accept: "application/json"
+        }
+      });
+    } catch {
+      if (attempt === GEOCODER_MAX_RETRIES - 1) break;
+      await sleep(RETRY_BASE_DELAY_MS * (attempt + 1));
+      continue;
+    }
 
     if (response.ok) {
       const parsed = await response.json();
@@ -2376,10 +2508,10 @@ async function searchNominatim(query) {
 
     const retryable = response.status === 429 || response.status === 503 || response.status === 504;
     if (!retryable || attempt === GEOCODER_MAX_RETRIES - 1) {
-      throw new Error("Geocoder unavailable");
+      break;
     }
 
-    await sleep(900 * (attempt + 1));
+    await sleep(RETRY_BASE_DELAY_MS * (attempt + 1));
   }
 
   const seen = new Set();
@@ -2397,6 +2529,14 @@ async function searchNominatim(query) {
   }
 
   return out;
+}
+
+async function waitForNominatimWindow() {
+  const waitMs = nominatimNextAllowedAt - Date.now();
+  if (waitMs > 0) {
+    await sleep(waitMs);
+  }
+  nominatimNextAllowedAt = Date.now() + NOMINATIM_MIN_INTERVAL_MS;
 }
 
 function readGeocodeCache(query) {
@@ -2439,9 +2579,12 @@ function openMeteoRowToSuggestion(row) {
   const lng = Number(row.longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
-  const country = String(row.country || "").trim();
+  const countryRaw = String(row.country || "").trim();
+  const country = resolveCountry(countryRaw) || countryRaw;
+  const countryCode = String(row.country_code || "").trim().toUpperCase();
   const admin1 = String(row.admin1 || "").trim();
   const admin2 = String(row.admin2 || "").trim();
+  const timezone = String(row.timezone || "").trim();
   const namePart = String(row.name || "").trim();
   const primary = namePart || admin1 || country;
   if (!primary) return null;
@@ -2456,6 +2599,8 @@ function openMeteoRowToSuggestion(row) {
     lat,
     lng,
     country: country || inferCountryFromFullName(fullName || primary),
+    countryCode,
+    continent: inferContinentFromTimezone(timezone, lat),
     type,
     className: "place",
     importance: normalizePopulation(row.population)
@@ -2468,6 +2613,7 @@ function rowToSuggestion(row) {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
   const address = row.address || {};
+  const countryCode = String(address.country_code || "").trim().toUpperCase();
   const primary =
     address.city ||
     address.town ||
@@ -2479,7 +2625,9 @@ function rowToSuggestion(row) {
     row.name ||
     String(row.display_name || "").split(",")[0];
 
-  const secondary = [address.state, address.country].filter(Boolean).join(", ");
+  const countryRaw = String(address.country || inferCountryFromFullName(row.display_name || primary));
+  const country = resolveCountry(countryRaw) || countryRaw;
+  const secondary = [address.state, country].filter(Boolean).join(", ");
   const name = secondary ? `${primary}, ${secondary}` : primary;
 
   return {
@@ -2487,7 +2635,9 @@ function rowToSuggestion(row) {
     fullName: String(row.display_name || name),
     lat,
     lng,
-    country: String(address.country || inferCountryFromFullName(row.display_name || name)),
+    country: country,
+    countryCode,
+    continent: inferContinent(country, countryCode, lat, lng),
     type: String(row.type || ""),
     className: String(row.class || ""),
     importance: Number(row.importance || 0)
@@ -2515,8 +2665,31 @@ function scoreSuggestion(mention, suggestion) {
     typeBoost = 0.12;
   }
 
+  const contextCountry = inferCountryFromContext(mention.context);
+  const suggestionCountry = suggestion.country || inferCountryFromFullName(suggestion.fullName);
+  let contextCountryBoost = 0;
+  if (contextCountry && suggestionCountry) {
+    const contextCountryNorm = normalizeCompare(contextCountry);
+    const suggestionCountryNorm = normalizeCompare(suggestionCountry);
+    if (
+      suggestionCountryNorm === contextCountryNorm ||
+      suggestionCountryNorm.includes(contextCountryNorm) ||
+      contextCountryNorm.includes(suggestionCountryNorm)
+    ) {
+      contextCountryBoost = 0.2;
+    } else {
+      contextCountryBoost = -0.14;
+    }
+  }
+
   const importanceBoost = Math.min(0.08, Math.max(0, suggestion.importance * 0.08));
-  const score = tokenScore * 0.5 + queryScore * 0.25 + contextScore * 0.25 + typeBoost + importanceBoost;
+  const score =
+    tokenScore * 0.5 +
+    queryScore * 0.25 +
+    contextScore * 0.25 +
+    typeBoost +
+    contextCountryBoost +
+    importanceBoost;
 
   return clamp(score, 0, 1);
 }
@@ -2565,13 +2738,19 @@ function getSelectedOption(queueItem) {
 }
 
 function toPlace(suggestion, mention) {
+  const country = suggestion.country || inferCountryFromFullName(suggestion.fullName);
+  const continent =
+    suggestion.continent ||
+    inferContinent(country, suggestion.countryCode, suggestion.lat, suggestion.lng);
   return {
     id: crypto.randomUUID(),
     name: suggestion.name,
     fullName: suggestion.fullName,
     lat: suggestion.lat,
     lng: suggestion.lng,
-    country: suggestion.country || inferCountryFromFullName(suggestion.fullName),
+    country,
+    countryCode: String(suggestion.countryCode || ""),
+    continent,
     notes: "",
     source: mention.source,
     query: mention.query
@@ -2602,7 +2781,9 @@ function groupPlaces(places, groupMode) {
 
   for (const place of places) {
     const country = place.country || inferCountryFromFullName(place.fullName || place.name);
-    const continent = inferContinent(country);
+    const continent =
+      place.continent ||
+      inferContinent(country, place.countryCode, place.lat, place.lng);
     const label =
       groupMode === "continent" ? continent || "Other / Unknown" : country || "Unknown country";
 
@@ -2627,10 +2808,17 @@ function inferCountryFromFullName(fullName) {
     .filter(Boolean);
 
   if (parts.length === 0) return "";
-  return parts[parts.length - 1];
+  const tail = parts[parts.length - 1];
+  return resolveCountry(tail) || tail;
 }
 
-function inferContinent(country) {
+function inferContinent(country, countryCode = "", lat = null, lng = null) {
+  const code = String(countryCode || "").toUpperCase();
+  if (code) {
+    const fromCode = inferContinentFromCountryCode(code);
+    if (fromCode) return fromCode;
+  }
+
   const key = normalizeCompare(country);
   if (!key) return "";
 
@@ -2644,12 +2832,72 @@ function inferContinent(country) {
     }
   }
 
+  if (Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))) {
+    return inferContinentFromCoordinates(Number(lat), Number(lng));
+  }
+
+  return "";
+}
+
+function inferContinentFromCountryCode(code) {
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  if (!normalizedCode) return "";
+  return COUNTRY_CODE_TO_CONTINENT[normalizedCode] || "";
+}
+
+function inferContinentFromTimezone(timezone, lat) {
+  const root = String(timezone || "").split("/")[0];
+  if (!root) return "";
+
+  if (root === "Europe") return "Europe";
+  if (root === "Asia") return "Asia";
+  if (root === "Africa") return "Africa";
+  if (root === "Australia" || root === "Pacific") return "Oceania";
+  if (root === "Antarctica") return "Antarctica";
+  if (root === "America") {
+    return Number(lat) < 12 ? "South America" : "North America";
+  }
+  return "";
+}
+
+function inferContinentFromCoordinates(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return "";
+
+  if (lat <= -60) return "Antarctica";
+
+  if (lng >= -92 && lng <= -30 && lat <= 15 && lat >= -60) {
+    return "South America";
+  }
+
+  if (lng >= -172 && lng <= -15 && lat >= 5 && lat <= 84) {
+    return "North America";
+  }
+
+  if (lng >= -25 && lng <= 60 && lat >= 34 && lat <= 72) {
+    return "Europe";
+  }
+
+  if (lng >= -25 && lng <= 55 && lat >= -38 && lat <= 38) {
+    return "Africa";
+  }
+
+  if ((lng >= 110 && lng <= 180 && lat >= -50 && lat <= 20) || (lng <= -140 && lat <= 20 && lat >= -50)) {
+    return "Oceania";
+  }
+
+  if (lng >= 25 && lng <= 180 && lat >= -8 && lat <= 82) {
+    return "Asia";
+  }
+
   return "";
 }
 
 function colorForPlace(place) {
   const country = place.country || inferCountryFromFullName(place.fullName || place.name);
-  const continent = inferContinent(country) || "Other / Unknown";
+  const continent =
+    place.continent ||
+    inferContinent(country, place.countryCode, place.lat, place.lng) ||
+    "Other / Unknown";
   return CONTINENT_COLORS[continent] || CONTINENT_COLORS["Other / Unknown"];
 }
 
@@ -2871,19 +3119,30 @@ function sanitizePlacesForStorage(value) {
   if (!Array.isArray(value)) return [];
   return value
     .filter(isValidPlace)
-    .map((place) => ({
-      id: place.id || crypto.randomUUID(),
-      name: String(place.name || ""),
-      fullName: String(place.fullName || place.name || ""),
-      lat: Number(place.lat),
-      lng: Number(place.lng),
-      country: String(
-        place.country || inferCountryFromFullName(place.fullName || place.name || "")
-      ),
-      notes: String(place.notes || ""),
-      source: String(place.source || ""),
-      query: String(place.query || "")
-    }));
+    .map((place) => {
+      const fullName = String(place.fullName || place.name || "");
+      const country = String(place.country || inferCountryFromFullName(fullName));
+      const countryCode = String(place.countryCode || "").toUpperCase();
+      const lat = Number(place.lat);
+      const lng = Number(place.lng);
+      const continent = String(
+        place.continent || inferContinent(country, countryCode, lat, lng) || ""
+      );
+
+      return {
+        id: place.id || crypto.randomUUID(),
+        name: String(place.name || ""),
+        fullName,
+        lat,
+        lng,
+        country,
+        countryCode,
+        continent,
+        notes: String(place.notes || ""),
+        source: String(place.source || ""),
+        query: String(place.query || "")
+      };
+    });
 }
 
 function loadStoredString(key, fallback = "") {
@@ -3031,6 +3290,92 @@ function normalizeCompare(value) {
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeAliasObject(value) {
+  const out = {};
+  if (!value || typeof value !== "object") return out;
+
+  for (const [rawKey, rawTarget] of Object.entries(value)) {
+    const key = toHeader(rawKey);
+    const target = String(rawTarget || "").trim();
+    if (!key || !target) continue;
+    out[key] = target;
+  }
+
+  return out;
+}
+
+function buildCountryIndex(aliasMap) {
+  const byNormalized = new Map();
+  const codeToCountry = new Map();
+
+  const displayNames =
+    typeof Intl !== "undefined" && typeof Intl.DisplayNames === "function"
+      ? new Intl.DisplayNames(["en"], { type: "region" })
+      : null;
+
+  let regionCodes = [];
+  if (typeof Intl !== "undefined" && typeof Intl.supportedValuesOf === "function") {
+    try {
+      regionCodes = Intl.supportedValuesOf("region");
+    } catch {
+      regionCodes = [];
+    }
+  }
+
+  if (regionCodes.length === 0 && displayNames) {
+    regionCodes = generateRegionCodeCandidates();
+  }
+
+  for (const code of regionCodes) {
+    if (!/^[A-Z]{2}$/.test(code)) continue;
+
+    let label = "";
+    try {
+      label = displayNames ? String(displayNames.of(code) || "").trim() : "";
+    } catch {
+      label = "";
+    }
+    if (!label || /^[A-Z]{2}$/.test(label)) continue;
+    if (normalizeCompare(label) === "unknown region") continue;
+
+    codeToCountry.set(code, label);
+    byNormalized.set(normalizeCompare(label), label);
+    byNormalized.set(normalizeCompare(code), label);
+
+    const noThe = normalizeCompare(label.replace(/^the\s+/i, ""));
+    if (noThe) {
+      byNormalized.set(noThe, label);
+    }
+  }
+
+  for (const [rawAlias, rawTarget] of Object.entries(aliasMap || {})) {
+    const alias = normalizeCompare(rawAlias);
+    if (!alias) continue;
+
+    const target = String(rawTarget || "").trim();
+    if (!target) continue;
+
+    const normalizedTarget = normalizeCompare(target);
+    const canonicalTarget = byNormalized.get(normalizedTarget) || target;
+    byNormalized.set(alias, canonicalTarget);
+  }
+
+  return {
+    byNormalized,
+    codeToCountry
+  };
+}
+
+function generateRegionCodeCandidates() {
+  const out = [];
+  for (let first = 65; first <= 90; first += 1) {
+    for (let second = 65; second <= 90; second += 1) {
+      out.push(`${String.fromCharCode(first)}${String.fromCharCode(second)}`);
+    }
+  }
+  return out;
 }
 
 function clamp(value, min, max) {

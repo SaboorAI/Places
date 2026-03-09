@@ -1,16 +1,18 @@
 # App Data Folder
 
-This folder contains editable app data/config so deployment is easier to manage.
+This folder contains editable app/user config so deployment is easier to manage.
 
 ## Files
-- `app-data.js`: Place parsing aliases, map style config, continent color mapping, and orbital defaults.
+- `app-data.js`: Runtime tuning for importer/parser/geocoder and continent color/group behavior.
 - `user-data.js`: User-owned storage keys, legacy migration keys, and optional starter user defaults.
 
 ## Typical edits before going live
-- Add or fix city/country aliases in `PLACE_ALIASES` and `COUNTRY_ALIASES`.
-- Adjust map tile providers in `MAP_STYLE_CONFIG`.
-- Tune orbital defaults (`ORBITAL_*`) and colors (`CONTINENT_COLORS`).
+- Tune importer behavior in `app-data.js`:
+  - `importer.requestDelayMs`
+  - `importer.autoApproveScore`
+  - `importer.nominatimMinIntervalMs`
+- Set list grouping colors in `continents.colors`.
 - Keep user data persistence separate with `USER_STORAGE_KEYS` (places, input draft, filter, preferences).
-- Set starter imported places in `USER_DEFAULTS.initialPlaces` if desired.
+- Keep starter data empty for production (`USER_DEFAULTS.initialPlaces = []`).
 
 The runtime logic stays in `/Users/alienship/Documents/Playground/app.js`.
