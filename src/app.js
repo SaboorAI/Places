@@ -59,6 +59,23 @@ const DATA_MODEL_CONFIG =
 const STATUS_DEFAULT =
   "Paste notes with cities/countries. The app will auto-pin confident matches and ask review for uncertain ones.";
 const RELATIONSHIP_TYPES = ["visit", "lived", "studied", "work"];
+const DEFAULT_LOCAL_USER_ID = "user_local";
+const DEFAULT_LOCAL_USER_NAME = "Me";
+const USER_DIRECTORY_STORAGE_KEY = "visitedPlaces.userDirectory.v1";
+const ACTIVE_USER_STORAGE_KEY = "visitedPlaces.activeUserId.v1";
+const SHOW_ALL_USERS_STORAGE_KEY = "visitedPlaces.showAllUsers.v1";
+const USER_PIN_PALETTE = [
+  "#69d1ff",
+  "#ff9ecf",
+  "#ffd166",
+  "#7de3ff",
+  "#64e6a8",
+  "#b98dff",
+  "#ffa96a",
+  "#a7f0ba",
+  "#ff8f8f",
+  "#95b8ff"
+];
 const IMPORT_DELAY_MS = Number(IMPORTER_CONFIG.requestDelayMs) > 0 ? Number(IMPORTER_CONFIG.requestDelayMs) : 180;
 const GEOCODER_MAX_RETRIES =
   Number(IMPORTER_CONFIG.geocoderMaxRetries) > 0 ? Number(IMPORTER_CONFIG.geocoderMaxRetries) : 3;
@@ -324,6 +341,10 @@ const CONTINENT_COLORS = {
 
 function App() {
   const initialPreferences = useMemo(loadUserPreferences, []);
+  const [userDirectory, setUserDirectory] = useState(loadUserDirectory);
+  const [activeUserId, setActiveUserId] = useState(loadActiveUserId);
+  const [showAllUsers, setShowAllUsers] = useState(loadShowAllUsers);
+  const [newUserName, setNewUserName] = useState("");
   const [places, setPlaces] = useState(loadPlaces);
   const [rawInput, setRawInput] = useState(loadInputDraft);
   const [placeFilter, setPlaceFilter] = useState(loadPlaceFilter);
@@ -351,11 +372,64 @@ function App() {
   const [eventAnalytics, setEventAnalytics] = useState(null);
   const placeListScrollTimerRef = useRef(0);
   const dataBootstrapStartedRef = useRef(false);
+  const reviewSectionRef = useRef(null);
+  const unmatchedSectionRef = useRef(null);
+  const importedSectionRef = useRef(null);
 
-  const sortedPlaces = useMemo(
-    () => [...places].sort((a, b) => a.name.localeCompare(b.name)),
+  const placesById = useMemo(
+    () => new Map(places.map((place) => [place.id, place])),
     [places]
   );
+  const normalizedUserDirectory = useMemo(
+    () => normalizeUserDirectory(userDirectory, places),
+    [userDirectory, places]
+  );
+  const userDirectoryById = useMemo(
+    () => new Map(normalizedUserDirectory.map((entry) => [entry.id, entry])),
+    [normalizedUserDirectory]
+  );
+  const activeUser = useMemo(
+    () => userDirectoryById.get(activeUserId) || null,
+    [userDirectoryById, activeUserId]
+  );
+  const visiblePlaces = useMemo(
+    () => scopePlacesByUser(places, activeUserId, showAllUsers),
+    [places, activeUserId, showAllUsers]
+  );
+  const sortedPlaces = useMemo(
+    () => [...visiblePlaces].sort((a, b) => a.name.localeCompare(b.name)),
+    [visiblePlaces]
+  );
+  const userColorById = useMemo(
+    () => buildUserColorById(places, normalizedUserDirectory),
+    [places, normalizedUserDirectory]
+  );
+  const sortedUsers = useMemo(
+    () => [...normalizedUserDirectory].sort((a, b) => a.name.localeCompare(b.name)),
+    [normalizedUserDirectory]
+  );
+  const visiblePlaceIdSet = useMemo(
+    () => new Set(visiblePlaces.map((place) => place.id)),
+    [visiblePlaces]
+  );
+  const visibleEventCount = useMemo(
+    () => visiblePlaces.filter((place) => Boolean(place.eventId)).length,
+    [visiblePlaces]
+  );
+  const visibleCountryCount = useMemo(() => {
+    const countries = new Set();
+    for (const place of visiblePlaces) {
+      const country = String(
+        place.country || inferCountryFromFullName(place.fullName || place.name || "")
+      ).trim();
+      if (country) {
+        countries.add(normalizeCompare(country));
+      }
+    }
+    return countries.size;
+  }, [visiblePlaces]);
+  const importedCount = visiblePlaces.length;
+  const scopeLabel = showAllUsers ? "all users" : activeUser?.name || DEFAULT_LOCAL_USER_NAME;
 
   const searchablePlaceRows = useMemo(
     () =>
@@ -372,11 +446,6 @@ function App() {
     [sortedPlaces]
   );
 
-  const placesById = useMemo(
-    () => new Map(places.map((place) => [place.id, place])),
-    [places]
-  );
-
   useEffect(() => {
     saveInputDraft(rawInput);
   }, [rawInput]);
@@ -388,6 +457,28 @@ function App() {
   useEffect(() => {
     saveUserPreferences({ groupMode, mapStyle, pathMode, mapShape });
   }, [groupMode, mapStyle, pathMode, mapShape]);
+
+  useEffect(() => {
+    if (!activeUserId && normalizedUserDirectory.length > 0) {
+      setActiveUserId(normalizedUserDirectory[0].id);
+      return;
+    }
+    if (activeUserId && !normalizedUserDirectory.some((entry) => entry.id === activeUserId)) {
+      setActiveUserId(normalizedUserDirectory[0]?.id || "");
+    }
+  }, [activeUserId, normalizedUserDirectory]);
+
+  useEffect(() => {
+    saveUserDirectory(normalizedUserDirectory);
+  }, [normalizedUserDirectory]);
+
+  useEffect(() => {
+    saveActiveUserId(activeUserId);
+  }, [activeUserId]);
+
+  useEffect(() => {
+    saveShowAllUsers(showAllUsers);
+  }, [showAllUsers]);
 
   useEffect(() => {
     if (!DATA_MODEL_BOOTSTRAP_ENABLED) return;
@@ -405,21 +496,30 @@ function App() {
         const model = await window.TravelDataModel.loadModel({ basePath: DATA_MODEL_BASE_PATH });
         if (cancelled) return;
 
+        const modelUsers = normalizeUserDirectory(model.users || [], []);
         const resolvedUserId =
-          DATA_MODEL_USER_ID || String(model.users?.[0]?.id || "").trim();
+          DATA_MODEL_USER_ID ||
+          activeUserId ||
+          String(modelUsers?.[0]?.id || "").trim() ||
+          DEFAULT_LOCAL_USER_ID;
 
-        if (!resolvedUserId) {
-          setDataModelSummary("Data loaded (no user found in users.json).");
-          return;
+        setUserDirectory((prev) => mergeUserDirectories(prev, modelUsers));
+        if (!activeUserId && resolvedUserId) {
+          setActiveUserId(resolvedUserId);
         }
 
-        const user = model.users.find((entry) => entry.id === resolvedUserId) || null;
-        const eventPlaces = window.TravelDataModel.buildUserPlaces(model, resolvedUserId);
+        const usersForEvents = modelUsers.length > 0 ? modelUsers : [{ id: resolvedUserId, name: resolvedUserId }];
+        const eventPlaces = usersForEvents
+          .flatMap((entry) => window.TravelDataModel.buildUserPlaces(model, entry.id))
+          .map((place) => ({
+            ...place,
+            userId: normalizePlaceOwnerId(place.userId || resolvedUserId)
+          }));
         const analytics = window.TravelDataModel.computeAnalytics(model, resolvedUserId);
 
         setEventAnalytics(analytics);
         setDataModelSummary(
-          `Data-driven mode: ${eventPlaces.length} event locations for ${user ? user.name : resolvedUserId}.`
+          `Data-driven mode: ${eventPlaces.length} event locations across ${usersForEvents.length} user(s).`
         );
 
         if (eventPlaces.length === 0) return;
@@ -470,6 +570,16 @@ function App() {
     }
   }, [selectedPlaceId, editingPlaceId, placesById]);
 
+  useEffect(() => {
+    if (selectedPlaceId && !visiblePlaceIdSet.has(selectedPlaceId)) {
+      setSelectedPlaceId("");
+      setMapFocus(null);
+    }
+    if (editingPlaceId && !visiblePlaceIdSet.has(editingPlaceId)) {
+      cancelEditPlace();
+    }
+  }, [selectedPlaceId, editingPlaceId, visiblePlaceIdSet]);
+
   const filteredPlaces = useMemo(() => {
     const query = normalizeCompare(placeFilter);
     if (!query) return sortedPlaces;
@@ -485,10 +595,49 @@ function App() {
 
   function commitPlaces(updater) {
     setPlaces((prev) => {
-      const next = updater(prev);
+      const next = sanitizePlacesForStorage(updater(prev));
       savePlaces(next);
       return next;
     });
+  }
+
+  function scrollToSection(sectionRef) {
+    const element = sectionRef?.current;
+    if (!element || typeof element.scrollIntoView !== "function") return;
+    element.scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    });
+  }
+
+  function addUserProfile() {
+    const name = String(newUserName || "").trim();
+    if (!name) {
+      setStatus("Enter a user name to create another profile.");
+      return;
+    }
+
+    let nextUserId = createUserIdFromName(name);
+    if (!nextUserId) {
+      nextUserId = `user_${Date.now()}`;
+    }
+
+    const alreadyExists = normalizedUserDirectory.some((entry) => entry.id === nextUserId);
+    if (alreadyExists) {
+      setActiveUserId(nextUserId);
+      setShowAllUsers(false);
+      setNewUserName("");
+      setStatus(`Switched to ${name}.`);
+      return;
+    }
+
+    setUserDirectory((prev) =>
+      mergeUserDirectories(prev, [{ id: nextUserId, name, createdAt: new Date().toISOString() }])
+    );
+    setActiveUserId(nextUserId);
+    setShowAllUsers(false);
+    setNewUserName("");
+    setStatus(`Created profile "${name}". New imports will be saved under this user.`);
   }
 
   async function handleImport(event) {
@@ -536,7 +685,7 @@ function App() {
         const clearLead = !second || best.score - second.score >= AUTO_APPROVE_MIN_LEAD;
 
         if (strongEnough && clearLead) {
-          const candidate = toPlace(best, mention);
+          const candidate = toPlace(best, mention, activeUserId);
           const key = placeKey(candidate);
 
           if (existingKeys.has(key)) {
@@ -869,7 +1018,7 @@ function App() {
     const selected = getSelectedOption(item);
     if (!selected) return;
 
-    const candidate = toPlace(selected, item.mention);
+    const candidate = toPlace(selected, item.mention, activeUserId);
     commitPlaces((prev) => mergePlaces(prev, [candidate]));
     setReviewQueue((prev) => prev.filter((entry) => entry.id !== id));
   }
@@ -878,7 +1027,7 @@ function App() {
     const candidates = reviewQueue
       .map((item) => {
         const selected = getSelectedOption(item);
-        return selected ? toPlace(selected, item.mention) : null;
+        return selected ? toPlace(selected, item.mention, activeUserId) : null;
       })
       .filter(Boolean);
 
@@ -976,7 +1125,7 @@ function App() {
     const selected = getSelectedOption(item);
     if (!selected) return;
 
-    const candidate = toPlace(selected, item.mention);
+    const candidate = toPlace(selected, item.mention, activeUserId);
     commitPlaces((prev) => mergePlaces(prev, [candidate]));
     setUnmatchedQueue((prev) => prev.filter((entry) => entry.id !== id));
   }
@@ -1034,18 +1183,101 @@ function App() {
 
         <section className="view-options">
           <div className="stats-row">
-            <span className="stat-chip">Imported: {places.length}</span>
-            <span className="stat-chip">Review: {reviewQueue.length}</span>
-            <span className="stat-chip">Unmatched: {unmatchedQueue.length}</span>
-            {eventAnalytics && (
-              <>
-                <span className="stat-chip">Events: {eventAnalytics.totalEvents}</span>
-                <span className="stat-chip">Countries: {eventAnalytics.totalCountries}</span>
-              </>
-            )}
+            <button
+              type="button"
+              className="stat-chip stat-chip-btn"
+              onClick={() => scrollToSection(importedSectionRef)}
+              title="Jump to imported places"
+            >
+              Imported: {importedCount}
+            </button>
+            <button
+              type="button"
+              className="stat-chip stat-chip-btn"
+              onClick={() => scrollToSection(reviewSectionRef)}
+              title="Jump to review queue"
+            >
+              Review: {reviewQueue.length}
+            </button>
+            <button
+              type="button"
+              className="stat-chip stat-chip-btn"
+              onClick={() => scrollToSection(unmatchedSectionRef)}
+              title="Jump to unmatched queue"
+            >
+              Unmatched: {unmatchedQueue.length}
+            </button>
+            <button
+              type="button"
+              className="stat-chip stat-chip-btn"
+              onClick={() => scrollToSection(importedSectionRef)}
+              title="Jump to imported places"
+            >
+              Events: {visibleEventCount}
+            </button>
+            <button
+              type="button"
+              className="stat-chip stat-chip-btn"
+              onClick={() => scrollToSection(importedSectionRef)}
+              title="Jump to imported places"
+            >
+              Countries: {visibleCountryCount}
+            </button>
           </div>
+          {eventAnalytics && (
+            <p className="places-subtext">
+              Data model baseline: {eventAnalytics.totalEvents} events, {eventAnalytics.totalCountries} countries.
+            </p>
+          )}
+          <p className="places-subtext">Viewing scope: {scopeLabel}</p>
 
           <div className="option-grid">
+            <div className="option-group">
+              <span className="option-label">Profiles</span>
+              <div className="profile-row">
+                <select
+                  value={activeUserId}
+                  onChange={(event) => {
+                    setActiveUserId(normalizePlaceOwnerId(event.target.value));
+                    setShowAllUsers(false);
+                  }}
+                  aria-label="Active profile"
+                >
+                  {sortedUsers.map((entry) => (
+                    <option key={`profile-${entry.id}`} value={entry.id}>
+                      {entry.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className={showAllUsers ? "" : "secondary"}
+                  onClick={() => setShowAllUsers((prev) => !prev)}
+                  title={showAllUsers ? "Show only active user" : "Show all users together"}
+                >
+                  {showAllUsers ? "Show Active" : "Show All"}
+                </button>
+              </div>
+              <div className="profile-row">
+                <input
+                  className="profile-input"
+                  type="text"
+                  value={newUserName}
+                  onChange={(event) => setNewUserName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addUserProfile();
+                    }
+                  }}
+                  placeholder="Add another profile (name)"
+                />
+                <button type="button" onClick={addUserProfile}>
+                  Add User
+                </button>
+              </div>
+            </div>
+
             <div className="option-group">
               <span className="option-label">Group List</span>
               <div className="segmented">
@@ -1128,7 +1360,6 @@ function App() {
                 </button>
               </div>
             </div>
-
           </div>
         </section>
 
@@ -1149,7 +1380,7 @@ function App() {
         </p>
 
         {reviewQueue.length > 0 && (
-          <section className="review-panel">
+          <section className="review-panel" ref={reviewSectionRef}>
             <div className="review-header">
               <h2>Needs Review ({reviewQueue.length})</h2>
               <button type="button" className="secondary" onClick={approveAllReview}>
@@ -1159,7 +1390,19 @@ function App() {
 
             <ul className="review-list">
               {reviewQueue.map((item) => (
-                <li key={item.id} className="review-item">
+                <li
+                  key={item.id}
+                  className="review-item"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => previewSuggestion(getSelectedOption(item))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      previewSuggestion(getSelectedOption(item));
+                    }
+                  }}
+                >
                   <div className="review-source" title={item.mention.source}>
                     Source: {item.mention.source}
                   </div>
@@ -1168,12 +1411,18 @@ function App() {
                     <input
                       value={item.query}
                       onChange={(event) => updateReviewQuery(item.id, event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => event.stopPropagation()}
                       disabled={item.isRefreshing}
                     />
                     <button
                       type="button"
                       className="secondary"
-                      onClick={() => refreshReview(item.id)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        refreshReview(item.id);
+                      }}
+                      onKeyDown={(event) => event.stopPropagation()}
                       disabled={item.isRefreshing}
                     >
                       {item.isRefreshing ? "Checking..." : "Re-check"}
@@ -1183,6 +1432,8 @@ function App() {
                   <select
                     value={String(item.selectedIndex)}
                     onChange={(event) => updateReviewSelection(item.id, Number(event.target.value))}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
                   >
                     {item.options.map((option, idx) => (
                       <option key={`${item.id}-${idx}`} value={String(idx)}>
@@ -1192,17 +1443,36 @@ function App() {
                   </select>
 
                   <div className="review-actions">
-                    <button type="button" onClick={() => approveReviewItem(item.id)}>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        approveReviewItem(item.id);
+                      }}
+                      onKeyDown={(event) => event.stopPropagation()}
+                    >
                       Add Selected
                     </button>
                     <button
                       type="button"
                       className="secondary"
-                      onClick={() => previewSuggestion(getSelectedOption(item))}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        previewSuggestion(getSelectedOption(item));
+                      }}
+                      onKeyDown={(event) => event.stopPropagation()}
                     >
                       Preview
                     </button>
-                    <button type="button" className="secondary" onClick={() => skipReviewItem(item.id)}>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        skipReviewItem(item.id);
+                      }}
+                      onKeyDown={(event) => event.stopPropagation()}
+                    >
                       Skip
                     </button>
                   </div>
@@ -1215,14 +1485,26 @@ function App() {
         )}
 
         {unmatchedQueue.length > 0 && (
-          <section className="unmatched-panel">
+          <section className="unmatched-panel" ref={unmatchedSectionRef}>
             <div className="review-header">
               <h2>Unmatched ({unmatchedQueue.length})</h2>
             </div>
 
             <ul className="review-list">
               {unmatchedQueue.map((item) => (
-                <li key={item.id} className="review-item">
+                <li
+                  key={item.id}
+                  className="review-item"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => previewSuggestion(getSelectedOption(item))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      previewSuggestion(getSelectedOption(item));
+                    }
+                  }}
+                >
                   <div className="review-source" title={item.mention.source}>
                     Source: {item.mention.source}
                   </div>
@@ -1231,12 +1513,18 @@ function App() {
                     <input
                       value={item.query}
                       onChange={(event) => updateUnmatchedQuery(item.id, event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => event.stopPropagation()}
                       disabled={item.isSearching}
                     />
                     <button
                       type="button"
                       className="secondary"
-                      onClick={() => searchUnmatched(item.id)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        searchUnmatched(item.id);
+                      }}
+                      onKeyDown={(event) => event.stopPropagation()}
                       disabled={item.isSearching}
                     >
                       {item.isSearching ? "Searching..." : "Find Match"}
@@ -1250,6 +1538,8 @@ function App() {
                         onChange={(event) =>
                           updateUnmatchedSelection(item.id, Number(event.target.value))
                         }
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
                       >
                         {item.options.map((option, idx) => (
                           <option key={`${item.id}-unmatched-${idx}`} value={String(idx)}>
@@ -1259,17 +1549,36 @@ function App() {
                       </select>
 
                       <div className="review-actions">
-                        <button type="button" onClick={() => addUnmatchedSelected(item.id)}>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            addUnmatchedSelected(item.id);
+                          }}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
                           Add Selected
                         </button>
                         <button
                           type="button"
                           className="secondary"
-                          onClick={() => previewSuggestion(getSelectedOption(item))}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            previewSuggestion(getSelectedOption(item));
+                          }}
+                          onKeyDown={(event) => event.stopPropagation()}
                         >
                           Preview
                         </button>
-                        <button type="button" className="secondary" onClick={() => skipUnmatched(item.id)}>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            skipUnmatched(item.id);
+                          }}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
                           Skip
                         </button>
                       </div>
@@ -1283,9 +1592,9 @@ function App() {
           </section>
         )}
 
-        <section className="places-panel">
+        <section className="places-panel" ref={importedSectionRef}>
           <div className="places-header">
-            <h2>All Imported Places ({places.length})</h2>
+            <h2>Imported Places ({importedCount})</h2>
           </div>
           <input
             className="places-filter"
@@ -1295,7 +1604,7 @@ function App() {
             placeholder="Search city, country, source line..."
           />
           <p className="places-subtext">
-            Showing {filteredPlaces.length} of {places.length}
+            Showing {filteredPlaces.length} of {importedCount} in current scope
           </p>
         </section>
 
@@ -1312,28 +1621,33 @@ function App() {
               </div>
 
               <ul className="place-list">
-                {group.items.map((place) => (
-                  <li
-                    key={place.id}
-                    id={placeListItemId(place.id)}
-                    data-place-id={place.id}
-                    className={`place-item${selectedPlaceId === place.id ? " is-selected" : ""}`}
-                    onClick={() => {
-                      if (editingPlaceId !== place.id) {
-                        focusPlace(place);
-                      }
-                    }}
-                    role={editingPlaceId === place.id ? undefined : "button"}
-                    tabIndex={editingPlaceId === place.id ? -1 : 0}
-                    onKeyDown={(event) => {
-                      if (editingPlaceId === place.id) return;
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        focusPlace(place);
-                      }
-                    }}
-                  >
-                    {editingPlaceId === place.id ? (
+                {group.items.map((place) => {
+                  const ownerId = normalizePlaceOwnerId(place.userId);
+                  const owner = userDirectoryById.get(ownerId);
+                  const ownerLabel = owner?.name || prettifyUserId(ownerId);
+                  const ownerColor = userColorById.get(ownerId) || paletteColorForUser(ownerId);
+                  return (
+                    <li
+                      key={place.id}
+                      id={placeListItemId(place.id)}
+                      data-place-id={place.id}
+                      className={`place-item${selectedPlaceId === place.id ? " is-selected" : ""}`}
+                      onClick={() => {
+                        if (editingPlaceId !== place.id) {
+                          focusPlace(place);
+                        }
+                      }}
+                      role={editingPlaceId === place.id ? undefined : "button"}
+                      tabIndex={editingPlaceId === place.id ? -1 : 0}
+                      onKeyDown={(event) => {
+                        if (editingPlaceId === place.id) return;
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          focusPlace(place);
+                        }
+                      }}
+                    >
+                      {editingPlaceId === place.id ? (
                       <div
                         className="place-edit"
                         onClick={(event) => event.stopPropagation()}
@@ -1422,50 +1736,61 @@ function App() {
                           </button>
                         </div>
                       </div>
-                    ) : (
-                      <>
-                        <div className="place-content">
-                          <span className="place-name" title={place.fullName}>
-                            {place.name}
-                          </span>
-                          <span className="place-meta">{place.country || "Unknown country"}</span>
-                          {place.relationshipType && (
-                            <span className="place-meta">
-                              {relationshipLabel(place.relationshipType)} |{" "}
-                              {formatEventDateRange(place.startDate, place.endDate)}
+                      ) : (
+                        <>
+                          <div className="place-content">
+                            <span className="place-name" title={place.fullName}>
+                              {place.name}
                             </span>
-                          )}
-                          {place.notes && (
-                            <span className="place-note" title={place.notes}>
-                              {place.notes}
-                            </span>
-                          )}
-                        </div>
-                        <div className="place-actions">
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              startEditPlace(place);
-                            }}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              removePlace(place.id);
-                            }}
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </li>
-                ))}
+                            <span className="place-meta">{place.country || "Unknown country"}</span>
+                            {(showAllUsers || ownerId !== normalizePlaceOwnerId(activeUserId)) && (
+                              <span className="place-owner">
+                                <span
+                                  className="place-owner-dot"
+                                  style={{ backgroundColor: ownerColor }}
+                                  aria-hidden="true"
+                                />
+                                {ownerLabel}
+                              </span>
+                            )}
+                            {place.relationshipType && (
+                              <span className="place-meta">
+                                {relationshipLabel(place.relationshipType)} |{" "}
+                                {formatEventDateRange(place.startDate, place.endDate)}
+                              </span>
+                            )}
+                            {place.notes && (
+                              <span className="place-note" title={place.notes}>
+                                {place.notes}
+                              </span>
+                            )}
+                          </div>
+                          <div className="place-actions">
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                startEditPlace(place);
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                removePlace(place.id);
+                              }}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           ))}
@@ -1475,20 +1800,24 @@ function App() {
       <section className={`map-wrap map-shape-${mapShape}`}>
         {mapShape === "orbital" ? (
           <GlobeMap
-            places={places}
+            places={visiblePlaces}
             focusTarget={mapFocus}
             mapStyle={mapStyle}
             pathMode={pathMode}
             selectedPlaceId={selectedPlaceId}
+            useUserColor={showAllUsers}
+            userColorById={userColorById}
             onPlaceSelect={handleMapPlaceSelect}
           />
         ) : (
           <LeafletMap
-            places={places}
+            places={visiblePlaces}
             focusTarget={mapFocus}
             mapStyle={mapStyle}
             pathMode={pathMode}
             selectedPlaceId={selectedPlaceId}
+            useUserColor={showAllUsers}
+            userColorById={userColorById}
             onPlaceSelect={handleMapPlaceSelect}
           />
         )}
@@ -1497,7 +1826,16 @@ function App() {
   );
 }
 
-function LeafletMap({ places, focusTarget, mapStyle, pathMode, selectedPlaceId, onPlaceSelect }) {
+function LeafletMap({
+  places,
+  focusTarget,
+  mapStyle,
+  pathMode,
+  selectedPlaceId,
+  useUserColor,
+  userColorById,
+  onPlaceSelect
+}) {
   const hostRef = useRef(null);
   const mapRef = useRef(null);
   const markerLayerRef = useRef(null);
@@ -1583,7 +1921,7 @@ function LeafletMap({ places, focusTarget, mapStyle, pathMode, selectedPlaceId, 
     for (const place of pointPlaces) {
       const relationshipStyle = getRelationshipVisualStyle(place.relationshipType);
       const markerRadius = relationshipStyle.leafletRadius;
-      const color = colorForPlace(place);
+      const color = colorForPlace(place, useUserColor ? userColorById : null);
       const hoverDetails = buildHoverTooltip(place);
       const marker = L.circleMarker([place.lat, place.lng], {
         radius: markerRadius,
@@ -1648,7 +1986,7 @@ function LeafletMap({ places, focusTarget, mapStyle, pathMode, selectedPlaceId, 
         maxZoom: targetZoom
       });
     }
-  }, [places, pathMode, mapStyle, onPlaceSelect]);
+  }, [places, pathMode, mapStyle, onPlaceSelect, userColorById, useUserColor]);
 
   useEffect(() => {
     if (!focusTarget || !mapRef.current) return;
@@ -1722,7 +2060,16 @@ function LeafletMap({ places, focusTarget, mapStyle, pathMode, selectedPlaceId, 
   );
 }
 
-function GlobeMap({ places, focusTarget, mapStyle, pathMode, selectedPlaceId, onPlaceSelect }) {
+function GlobeMap({
+  places,
+  focusTarget,
+  mapStyle,
+  pathMode,
+  selectedPlaceId,
+  useUserColor,
+  userColorById,
+  onPlaceSelect
+}) {
   const hostRef = useRef(null);
   const globeRef = useRef(null);
   const onPlaceSelectRef = useRef(onPlaceSelect);
@@ -1975,7 +2322,7 @@ function GlobeMap({ places, focusTarget, mapStyle, pathMode, selectedPlaceId, on
         placeId: place.id,
         lat: Number(place.lat),
         lng: Number(place.lng),
-        color: colorForPlace(place),
+        color: colorForPlace(place, useUserColor ? userColorById : null),
         altitude: relationshipStyle.globeAltitude,
         radius: relationshipStyle.globeRadius,
         label: buildGlobeLabel(place)
@@ -1999,7 +2346,7 @@ function GlobeMap({ places, focusTarget, mapStyle, pathMode, selectedPlaceId, on
     globe.pointsData(points);
     globe.arcsData(arcs);
 
-  }, [pointPlaces, pathMode, mapStyle]);
+  }, [pointPlaces, pathMode, mapStyle, userColorById, useUserColor]);
 
   useEffect(() => {
     const globe = globeRef.current;
@@ -2921,7 +3268,7 @@ function getSelectedOption(queueItem) {
   return queueItem.options[selectedIndex] || queueItem.options[0] || null;
 }
 
-function toPlace(suggestion, mention) {
+function toPlace(suggestion, mention, ownerUserId = DEFAULT_LOCAL_USER_ID) {
   const country = suggestion.country || inferCountryFromFullName(suggestion.fullName);
   const continent =
     suggestion.continent ||
@@ -2929,7 +3276,7 @@ function toPlace(suggestion, mention) {
   return {
     id: crypto.randomUUID(),
     eventId: "",
-    userId: "",
+    userId: normalizePlaceOwnerId(ownerUserId),
     cityId: "",
     tripId: null,
     relationshipType: "visit",
@@ -2966,9 +3313,129 @@ function mergePlaces(existing, incoming) {
 
 function placeKey(place) {
   if (place && place.eventId) {
-    return `event:${String(place.eventId)}`;
+    return `event:${normalizePlaceOwnerId(place.userId)}:${String(place.eventId)}`;
   }
-  return `${normalizeCompare(place.fullName || place.name)}|${Number(place.lat).toFixed(3)}|${Number(place.lng).toFixed(3)}`;
+  const ownerId = normalizePlaceOwnerId(place?.userId);
+  return `${ownerId}|${normalizeCompare(place.fullName || place.name)}|${Number(place.lat).toFixed(3)}|${Number(place.lng).toFixed(3)}`;
+}
+
+function normalizePlaceOwnerId(value, fallback = DEFAULT_LOCAL_USER_ID) {
+  const raw = String(value || "").trim();
+  if (!raw) return String(fallback || DEFAULT_LOCAL_USER_ID);
+  return raw;
+}
+
+function createUserIdFromName(name) {
+  const normalized = normalizeCompare(name).replace(/\s+/g, "_");
+  const safe = normalized.replace(/[^a-z0-9_]/g, "");
+  if (!safe) return "";
+  return safe.startsWith("user_") ? safe : `user_${safe}`;
+}
+
+function prettifyUserId(userId) {
+  const compact = String(userId || "")
+    .trim()
+    .replace(/^user[_-]?/i, "")
+    .replace(/[_-]+/g, " ");
+  if (!compact) return DEFAULT_LOCAL_USER_NAME;
+  return compact
+    .split(" ")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
+function isHexColor(value) {
+  return /^#(?:[0-9a-fA-F]{3}){1,2}$/.test(String(value || "").trim());
+}
+
+function paletteColorForUser(userId) {
+  const id = String(userId || "");
+  if (!id) return USER_PIN_PALETTE[0];
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  }
+  const index = hash % USER_PIN_PALETTE.length;
+  return USER_PIN_PALETTE[index] || USER_PIN_PALETTE[0];
+}
+
+function normalizeUserDirectory(value, places = []) {
+  const map = new Map();
+
+  const addEntry = (rawId, rawName, rawColor) => {
+    const candidateId =
+      normalizePlaceOwnerId(rawId, "") ||
+      normalizePlaceOwnerId(createUserIdFromName(rawName), DEFAULT_LOCAL_USER_ID);
+    const id = candidateId || DEFAULT_LOCAL_USER_ID;
+    const existing = map.get(id);
+    const baseName =
+      String(rawName || "").trim() ||
+      (id === DEFAULT_LOCAL_USER_ID ? DEFAULT_LOCAL_USER_NAME : prettifyUserId(id));
+    const color = isHexColor(rawColor) ? String(rawColor).trim() : paletteColorForUser(id);
+    map.set(id, {
+      id,
+      name: baseName,
+      color,
+      createdAt: existing?.createdAt || new Date().toISOString()
+    });
+  };
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!entry || typeof entry !== "object") continue;
+      addEntry(entry.id, entry.name, entry.color);
+    }
+  }
+
+  if (Array.isArray(places)) {
+    for (const place of places) {
+      const ownerId = normalizePlaceOwnerId(place?.userId);
+      const fallbackName =
+        ownerId === DEFAULT_LOCAL_USER_ID ? DEFAULT_LOCAL_USER_NAME : prettifyUserId(ownerId);
+      addEntry(ownerId, fallbackName, "");
+    }
+  }
+
+  if (map.size === 0) {
+    addEntry(DEFAULT_LOCAL_USER_ID, DEFAULT_LOCAL_USER_NAME, USER_PIN_PALETTE[0]);
+  }
+
+  return [...map.values()];
+}
+
+function mergeUserDirectories(existing, incoming) {
+  const base = normalizeUserDirectory(existing || [], []);
+  const next = normalizeUserDirectory(incoming || [], []);
+  const map = new Map(base.map((entry) => [entry.id, entry]));
+
+  for (const entry of next) {
+    const previous = map.get(entry.id);
+    map.set(entry.id, {
+      ...previous,
+      ...entry,
+      name: String(entry.name || previous?.name || "").trim() || prettifyUserId(entry.id),
+      color: isHexColor(entry.color) ? entry.color : previous?.color || paletteColorForUser(entry.id)
+    });
+  }
+
+  return normalizeUserDirectory([...map.values()], []);
+}
+
+function scopePlacesByUser(places, activeUserId, showAllUsers) {
+  if (!Array.isArray(places) || places.length === 0) return [];
+  if (showAllUsers) return places;
+
+  const target = normalizePlaceOwnerId(activeUserId);
+  return places.filter((place) => normalizePlaceOwnerId(place.userId) === target);
+}
+
+function buildUserColorById(places, userDirectory) {
+  const map = new Map();
+  const normalized = normalizeUserDirectory(userDirectory || [], places || []);
+  for (const entry of normalized) {
+    map.set(entry.id, isHexColor(entry.color) ? entry.color : paletteColorForUser(entry.id));
+  }
+  return map;
 }
 
 function groupPlaces(places, groupMode) {
@@ -3087,7 +3554,17 @@ function inferContinentFromCoordinates(lat, lng) {
   return "";
 }
 
-function colorForPlace(place) {
+function colorForPlace(place, userColorById = null) {
+  const ownerId = normalizePlaceOwnerId(place?.userId);
+  if (
+    userColorById &&
+    typeof userColorById.get === "function" &&
+    Number(userColorById.size || 0) > 1
+  ) {
+    const userColor = userColorById.get(ownerId);
+    if (userColor) return userColor;
+  }
+
   const country = place.country || inferCountryFromFullName(place.fullName || place.name);
   const continent =
     place.continent ||
@@ -3194,16 +3671,32 @@ function buildConnectionPairs(pointPlaces, pathMode) {
     return [];
   }
 
-  if (pathMode === "hub") {
-    const hub = pointPlaces[0];
-    return pointPlaces.slice(1).map((target) => ({ from: hub, to: target }));
+  const pairs = [];
+  const byOwner = new Map();
+
+  for (const place of pointPlaces) {
+    const ownerId = normalizePlaceOwnerId(place.userId);
+    if (!byOwner.has(ownerId)) {
+      byOwner.set(ownerId, []);
+    }
+    byOwner.get(ownerId).push(place);
   }
 
-  const sorted = [...pointPlaces].sort(comparePlacesForTimeline);
-  const pairs = [];
+  for (const ownerPlaces of byOwner.values()) {
+    if (ownerPlaces.length < 2) continue;
+    const sorted = [...ownerPlaces].sort(comparePlacesForTimeline);
 
-  for (let i = 1; i < sorted.length; i += 1) {
-    pairs.push({ from: sorted[i - 1], to: sorted[i] });
+    if (pathMode === "hub") {
+      const hub = sorted[0];
+      for (let i = 1; i < sorted.length; i += 1) {
+        pairs.push({ from: hub, to: sorted[i] });
+      }
+      continue;
+    }
+
+    for (let i = 1; i < sorted.length; i += 1) {
+      pairs.push({ from: sorted[i - 1], to: sorted[i] });
+    }
   }
 
   return pairs;
@@ -3439,7 +3932,7 @@ function sanitizePlacesForStorage(value) {
       return {
         id: place.id || crypto.randomUUID(),
         eventId: String(place.eventId || ""),
-        userId: String(place.userId || ""),
+        userId: normalizePlaceOwnerId(place.userId),
         cityId: String(place.cityId || ""),
         tripId: place.tripId ? String(place.tripId || "") : null,
         relationshipType: sanitizeRelationshipType(place.relationshipType || "visit"),
@@ -3477,6 +3970,46 @@ function saveStoredString(key, value) {
   } catch {
     // Ignore storage write failures.
   }
+}
+
+function loadUserDirectory() {
+  try {
+    const raw = localStorage.getItem(USER_DIRECTORY_STORAGE_KEY);
+    if (!raw) {
+      return normalizeUserDirectory([], []);
+    }
+    const parsed = JSON.parse(raw);
+    return normalizeUserDirectory(parsed, []);
+  } catch {
+    return normalizeUserDirectory([], []);
+  }
+}
+
+function saveUserDirectory(value) {
+  const normalized = normalizeUserDirectory(value, []);
+  try {
+    localStorage.setItem(USER_DIRECTORY_STORAGE_KEY, JSON.stringify(normalized));
+  } catch {
+    // Ignore storage write failures.
+  }
+}
+
+function loadActiveUserId() {
+  const stored = loadStoredString(ACTIVE_USER_STORAGE_KEY, "");
+  return normalizePlaceOwnerId(stored || DEFAULT_LOCAL_USER_ID);
+}
+
+function saveActiveUserId(value) {
+  saveStoredString(ACTIVE_USER_STORAGE_KEY, normalizePlaceOwnerId(value));
+}
+
+function loadShowAllUsers() {
+  const raw = loadStoredString(SHOW_ALL_USERS_STORAGE_KEY, "0");
+  return raw === "1" || raw === "true";
+}
+
+function saveShowAllUsers(value) {
+  saveStoredString(SHOW_ALL_USERS_STORAGE_KEY, value ? "1" : "0");
 }
 
 function getDefaultUserPreferences() {
@@ -3580,8 +4113,9 @@ function loadPlaces() {
 }
 
 function savePlaces(nextPlaces) {
+  const safePlaces = sanitizePlacesForStorage(nextPlaces);
   try {
-    localStorage.setItem(USER_STORAGE.places, JSON.stringify(nextPlaces));
+    localStorage.setItem(USER_STORAGE.places, JSON.stringify(safePlaces));
   } catch {
     // Ignore storage write failures.
   }
