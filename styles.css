@@ -146,8 +146,20 @@ h2 {
   gap: 0.4rem;
 }
 
+.profile-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hidden-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .profile-row select,
-.profile-row input {
+.profile-row input:not(.hidden-file-input) {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 9px;
@@ -155,6 +167,10 @@ h2 {
   font-size: 0.9rem;
   background: color-mix(in srgb, var(--surface-2) 85%, #111b29 15%);
   color: var(--text);
+}
+
+.cloud-status {
+  min-height: 1.2rem;
 }
 
 .option-label {

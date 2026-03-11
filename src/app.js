@@ -56,6 +56,10 @@ const DATA_MODEL_CONFIG =
   EXTERNAL_APP_CONFIG.dataModel && typeof EXTERNAL_APP_CONFIG.dataModel === "object"
     ? EXTERNAL_APP_CONFIG.dataModel
     : {};
+const CLOUD_SYNC_CONFIG =
+  EXTERNAL_APP_CONFIG.cloudSync && typeof EXTERNAL_APP_CONFIG.cloudSync === "object"
+    ? EXTERNAL_APP_CONFIG.cloudSync
+    : {};
 const STATUS_DEFAULT =
   "Paste notes with cities/countries. The app will auto-pin confident matches and ask review for uncertain ones.";
 const RELATIONSHIP_TYPES = ["visit", "lived", "studied", "work"];
@@ -64,6 +68,7 @@ const DEFAULT_LOCAL_USER_NAME = "Me";
 const USER_DIRECTORY_STORAGE_KEY = "visitedPlaces.userDirectory.v1";
 const ACTIVE_USER_STORAGE_KEY = "visitedPlaces.activeUserId.v1";
 const SHOW_ALL_USERS_STORAGE_KEY = "visitedPlaces.showAllUsers.v1";
+const CLOUD_SYNC_SETTINGS_STORAGE_KEY = "visitedPlaces.cloudSync.settings.v1";
 const USER_PIN_PALETTE = [
   "#69d1ff",
   "#ff9ecf",
@@ -111,6 +116,16 @@ const DATA_MODEL_BASE_PATH = String(DATA_MODEL_CONFIG.basePath || "data");
 const DATA_MODEL_SEED_ON_EMPTY = DATA_MODEL_CONFIG.seedFromEventsOnEmpty !== false;
 const DATA_MODEL_MERGE_WITH_LOCAL = DATA_MODEL_CONFIG.mergeWithLocal === true;
 const DATA_MODEL_USER_ID = String(DATA_MODEL_CONFIG.eventUserId || "").trim();
+const CLOUD_SYNC_ENABLED = CLOUD_SYNC_CONFIG.enabled !== false;
+const CLOUD_SYNC_API_BASE = String(CLOUD_SYNC_CONFIG.apiBase || "")
+  .trim()
+  .replace(/\/+$/, "");
+const CLOUD_SYNC_DEFAULT_SPACE_KEY =
+  sanitizeCloudSpaceKey(String(CLOUD_SYNC_CONFIG.defaultSpaceKey || "")) || "global";
+const CLOUD_SYNC_AUTO_LOAD_ON_START = CLOUD_SYNC_CONFIG.autoLoadOnStart === true;
+const CLOUD_SYNC_AUTO_SAVE_DEFAULT = CLOUD_SYNC_CONFIG.autoSync === true;
+const CLOUD_SYNC_DEBOUNCE_MS =
+  Number(CLOUD_SYNC_CONFIG.debounceMs) > 200 ? Number(CLOUD_SYNC_CONFIG.debounceMs) : 1400;
 
 const CONTINENT_HEADERS = new Set(
   Array.isArray(PARSER_CONFIG.continentHeaders) && PARSER_CONFIG.continentHeaders.length > 0
@@ -341,9 +356,20 @@ const CONTINENT_COLORS = {
 
 function App() {
   const initialPreferences = useMemo(loadUserPreferences, []);
+  const initialCloudSyncSettings = useMemo(loadCloudSyncSettings, []);
   const [userDirectory, setUserDirectory] = useState(loadUserDirectory);
   const [activeUserId, setActiveUserId] = useState(loadActiveUserId);
   const [showAllUsers, setShowAllUsers] = useState(loadShowAllUsers);
+  const [cloudSpaceKey, setCloudSpaceKey] = useState(
+    initialCloudSyncSettings.spaceKey || CLOUD_SYNC_DEFAULT_SPACE_KEY
+  );
+  const [cloudAutoSync, setCloudAutoSync] = useState(
+    initialCloudSyncSettings.autoSync === true
+  );
+  const [cloudSyncStatus, setCloudSyncStatus] = useState(
+    CLOUD_SYNC_ENABLED ? "Cloud sync ready." : "Cloud sync disabled in app config."
+  );
+  const [isCloudBusy, setIsCloudBusy] = useState(false);
   const [newUserName, setNewUserName] = useState("");
   const [places, setPlaces] = useState(loadPlaces);
   const [rawInput, setRawInput] = useState(loadInputDraft);
@@ -371,7 +397,11 @@ function App() {
   const [dataModelSummary, setDataModelSummary] = useState("");
   const [eventAnalytics, setEventAnalytics] = useState(null);
   const placeListScrollTimerRef = useRef(0);
+  const cloudSaveTimerRef = useRef(0);
+  const cloudSkipNextAutoSaveRef = useRef(true);
+  const cloudAutoLoadStartedRef = useRef(false);
   const dataBootstrapStartedRef = useRef(false);
+  const importFileInputRef = useRef(null);
   const reviewSectionRef = useRef(null);
   const unmatchedSectionRef = useRef(null);
   const importedSectionRef = useRef(null);
@@ -430,6 +460,12 @@ function App() {
   }, [visiblePlaces]);
   const importedCount = visiblePlaces.length;
   const scopeLabel = showAllUsers ? "all users" : activeUser?.name || DEFAULT_LOCAL_USER_NAME;
+  const hasMultipleProfiles = sortedUsers.length > 1;
+  const cloudSpaceKeySafe = useMemo(
+    () => sanitizeCloudSpaceKey(cloudSpaceKey),
+    [cloudSpaceKey]
+  );
+  const cloudSyncReady = CLOUD_SYNC_ENABLED && Boolean(cloudSpaceKeySafe);
 
   const searchablePlaceRows = useMemo(
     () =>
@@ -479,6 +515,13 @@ function App() {
   useEffect(() => {
     saveShowAllUsers(showAllUsers);
   }, [showAllUsers]);
+
+  useEffect(() => {
+    saveCloudSyncSettings({
+      spaceKey: cloudSpaceKey,
+      autoSync: cloudAutoSync
+    });
+  }, [cloudSpaceKey, cloudAutoSync]);
 
   useEffect(() => {
     if (!DATA_MODEL_BOOTSTRAP_ENABLED) return;
@@ -552,10 +595,39 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!CLOUD_SYNC_ENABLED || !CLOUD_SYNC_AUTO_LOAD_ON_START) return;
+    if (!cloudSyncReady || cloudAutoLoadStartedRef.current) return;
+    cloudAutoLoadStartedRef.current = true;
+    handleCloudLoad();
+  }, [cloudSyncReady]);
+
+  useEffect(() => {
+    if (!cloudSyncReady || !cloudAutoSync || isCloudBusy) return;
+
+    if (cloudSkipNextAutoSaveRef.current) {
+      cloudSkipNextAutoSaveRef.current = false;
+      return;
+    }
+
+    if (cloudSaveTimerRef.current) {
+      clearTimeout(cloudSaveTimerRef.current);
+      cloudSaveTimerRef.current = 0;
+    }
+
+    cloudSaveTimerRef.current = window.setTimeout(() => {
+      cloudSaveTimerRef.current = 0;
+      handleCloudSave("auto");
+    }, CLOUD_SYNC_DEBOUNCE_MS);
+  }, [places, normalizedUserDirectory, cloudSyncReady, cloudAutoSync, isCloudBusy, cloudSpaceKeySafe]);
+
   useEffect(
     () => () => {
       if (placeListScrollTimerRef.current) {
         clearTimeout(placeListScrollTimerRef.current);
+      }
+      if (cloudSaveTimerRef.current) {
+        clearTimeout(cloudSaveTimerRef.current);
       }
     },
     []
@@ -640,6 +712,179 @@ function App() {
     setStatus(`Created profile "${name}". New imports will be saved under this user.`);
   }
 
+  function ownerNameForQueueItem(item) {
+    const ownerId = normalizePlaceOwnerId(item?.ownerUserId);
+    const owner = userDirectoryById.get(ownerId);
+    return owner?.name || prettifyUserId(ownerId);
+  }
+
+  async function handleCloudLoad() {
+    if (!cloudSyncReady) {
+      setCloudSyncStatus("Use a valid cloud space key (letters, numbers, _ or -).");
+      return;
+    }
+
+    setIsCloudBusy(true);
+    setCloudSyncStatus(`Loading "${cloudSpaceKeySafe}"...`);
+
+    try {
+      const remotePayload = await fetchCloudStateBySpace(cloudSpaceKeySafe);
+      const remoteState = sanitizeCloudStatePayload(remotePayload?.state || remotePayload);
+      const remotePlaces = sanitizePlacesForStorage(remoteState.places || []);
+      const remoteUsers = normalizeUserDirectory(remoteState.users || [], remotePlaces);
+      let mergedPlaces = 0;
+
+      if (remoteUsers.length > 0) {
+        setUserDirectory((prev) => mergeUserDirectories(prev, remoteUsers));
+      }
+
+      if (remotePlaces.length > 0) {
+        commitPlaces((prev) => {
+          const merged = mergePlaces(prev, remotePlaces);
+          mergedPlaces = Math.max(0, merged.length - prev.length);
+          return merged;
+        });
+      }
+
+      cloudSkipNextAutoSaveRef.current = true;
+      setCloudSyncStatus(
+        `Loaded "${cloudSpaceKeySafe}" (${remotePlaces.length} places, ${remoteUsers.length} users).`
+      );
+      setStatus(`Cloud load complete. Added ${mergedPlaces} new place(s).`);
+    } catch (error) {
+      const message =
+        error && typeof error.message === "string" && error.message
+          ? error.message
+          : "Cloud load failed.";
+      setCloudSyncStatus(`Load failed: ${message}`);
+      setStatus(`Cloud load failed: ${message}`);
+    } finally {
+      setIsCloudBusy(false);
+    }
+  }
+
+  async function handleCloudSave(mode = "manual") {
+    if (!cloudSyncReady) {
+      setCloudSyncStatus("Use a valid cloud space key (letters, numbers, _ or -).");
+      if (mode === "manual") {
+        setStatus("Cloud save skipped: invalid cloud space key.");
+      }
+      return;
+    }
+
+    setIsCloudBusy(true);
+    if (mode === "manual") {
+      setCloudSyncStatus(`Saving "${cloudSpaceKeySafe}"...`);
+    }
+
+    try {
+      const payload = buildCloudStatePayload({
+        users: normalizedUserDirectory,
+        places
+      });
+
+      const result = await saveCloudStateBySpace(cloudSpaceKeySafe, payload);
+      const savedState = sanitizeCloudStatePayload(result?.state || payload);
+      const timestamp = formatSyncTimestamp(savedState.updatedAt || new Date().toISOString());
+
+      setCloudSyncStatus(
+        `Saved "${cloudSpaceKeySafe}" (${savedState.places.length} places) at ${timestamp}.`
+      );
+      if (mode === "manual") {
+        setStatus(
+          `Cloud save complete: ${savedState.places.length} places across ${savedState.users.length} profile(s).`
+        );
+      }
+    } catch (error) {
+      const message =
+        error && typeof error.message === "string" && error.message
+          ? error.message
+          : "Cloud save failed.";
+      setCloudSyncStatus(`Save failed: ${message}`);
+      if (mode === "manual") {
+        setStatus(`Cloud save failed: ${message}`);
+      }
+    } finally {
+      setIsCloudBusy(false);
+    }
+  }
+
+  function exportBackup() {
+    const payload = {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      users: normalizedUserDirectory,
+      places: sanitizePlacesForStorage(places),
+      preferences: {
+        groupMode,
+        mapStyle,
+        pathMode,
+        mapShape
+      }
+    };
+    const fileDate = new Date().toISOString().slice(0, 10);
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `places-backup-${fileDate}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setStatus(
+      `Exported backup: ${payload.places.length} places across ${payload.users.length} profile(s).`
+    );
+  }
+
+  function openBackupImportPicker() {
+    if (!importFileInputRef.current) return;
+    importFileInputRef.current.click();
+  }
+
+  async function handleBackupFileChange(event) {
+    const input = event.target;
+    const file = input?.files?.[0];
+    if (!file) return;
+
+    try {
+      const content = await file.text();
+      const parsed = JSON.parse(content);
+      const importedPlaces = sanitizePlacesForStorage(
+        parsed?.places || parsed?.data?.places || parsed?.items || []
+      );
+      const importedUsers = normalizeUserDirectory(
+        parsed?.users || parsed?.userDirectory || parsed?.data?.users || [],
+        importedPlaces
+      );
+
+      if (importedPlaces.length === 0 && importedUsers.length === 0) {
+        setStatus("Import file does not contain compatible backup data.");
+        return;
+      }
+
+      if (importedUsers.length > 0) {
+        setUserDirectory((prev) => mergeUserDirectories(prev, importedUsers));
+      }
+
+      if (importedPlaces.length > 0) {
+        commitPlaces((prev) => mergePlaces(prev, importedPlaces));
+      }
+
+      if (!activeUserId && importedUsers.length > 0) {
+        setActiveUserId(importedUsers[0].id);
+      }
+
+      setStatus(
+        `Imported backup: ${importedPlaces.length} place(s) and ${importedUsers.length} profile(s).`
+      );
+    } catch {
+      setStatus("Backup import failed. Use a valid JSON export from this app.");
+    } finally {
+      if (input) {
+        input.value = "";
+      }
+    }
+  }
+
   async function handleImport(event) {
     event.preventDefault();
 
@@ -658,6 +903,7 @@ function App() {
     const unmatched = [];
     let duplicates = 0;
     let failed = 0;
+    const importOwnerId = normalizePlaceOwnerId(activeUserId);
 
     for (let i = 0; i < mentions.length; i += 1) {
       const mention = mentions[i];
@@ -668,6 +914,7 @@ function App() {
         if (scored.length === 0) {
           unmatched.push({
             id: crypto.randomUUID(),
+            ownerUserId: importOwnerId,
             mention,
             query: mention.query,
             selectedIndex: 0,
@@ -697,6 +944,7 @@ function App() {
         } else {
           queue.push({
             id: crypto.randomUUID(),
+            ownerUserId: importOwnerId,
             mention,
             query: mention.query,
             selectedIndex: 0,
@@ -708,6 +956,7 @@ function App() {
       } catch {
         unmatched.push({
           id: crypto.randomUUID(),
+          ownerUserId: importOwnerId,
           mention,
           query: mention.query,
           selectedIndex: 0,
@@ -1018,7 +1267,7 @@ function App() {
     const selected = getSelectedOption(item);
     if (!selected) return;
 
-    const candidate = toPlace(selected, item.mention, activeUserId);
+    const candidate = toPlace(selected, item.mention, item.ownerUserId || activeUserId);
     commitPlaces((prev) => mergePlaces(prev, [candidate]));
     setReviewQueue((prev) => prev.filter((entry) => entry.id !== id));
   }
@@ -1027,7 +1276,7 @@ function App() {
     const candidates = reviewQueue
       .map((item) => {
         const selected = getSelectedOption(item);
-        return selected ? toPlace(selected, item.mention, activeUserId) : null;
+        return selected ? toPlace(selected, item.mention, item.ownerUserId || activeUserId) : null;
       })
       .filter(Boolean);
 
@@ -1125,7 +1374,7 @@ function App() {
     const selected = getSelectedOption(item);
     if (!selected) return;
 
-    const candidate = toPlace(selected, item.mention, activeUserId);
+    const candidate = toPlace(selected, item.mention, item.ownerUserId || activeUserId);
     commitPlaces((prev) => mergePlaces(prev, [candidate]));
     setUnmatchedQueue((prev) => prev.filter((entry) => entry.id !== id));
   }
@@ -1276,7 +1525,63 @@ function App() {
                   Add User
                 </button>
               </div>
+              <div className="profile-row profile-actions">
+                <button type="button" className="secondary" onClick={exportBackup}>
+                  Export Backup
+                </button>
+                <button type="button" className="secondary" onClick={openBackupImportPicker}>
+                  Import Backup
+                </button>
+                <input
+                  ref={importFileInputRef}
+                  className="hidden-file-input"
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={handleBackupFileChange}
+                />
+              </div>
             </div>
+
+            {CLOUD_SYNC_ENABLED && (
+              <div className="option-group">
+                <span className="option-label">Cloud Sync</span>
+                <div className="profile-row">
+                  <input
+                    type="text"
+                    value={cloudSpaceKey}
+                    onChange={(event) => setCloudSpaceKey(event.target.value)}
+                    placeholder="Shared cloud space key"
+                  />
+                  <button
+                    type="button"
+                    className={cloudAutoSync ? "" : "secondary"}
+                    onClick={() => setCloudAutoSync((prev) => !prev)}
+                    title="Toggle automatic cloud save"
+                  >
+                    Auto {cloudAutoSync ? "On" : "Off"}
+                  </button>
+                </div>
+                <div className="profile-row profile-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={handleCloudLoad}
+                    disabled={!cloudSyncReady || isCloudBusy}
+                  >
+                    {isCloudBusy ? "Syncing..." : "Load Cloud"}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => handleCloudSave("manual")}
+                    disabled={!cloudSyncReady || isCloudBusy}
+                  >
+                    Save Cloud
+                  </button>
+                </div>
+                <p className="places-subtext cloud-status">{cloudSyncStatus}</p>
+              </div>
+            )}
 
             <div className="option-group">
               <span className="option-label">Group List</span>
@@ -1405,6 +1710,7 @@ function App() {
                 >
                   <div className="review-source" title={item.mention.source}>
                     Source: {item.mention.source}
+                    {hasMultipleProfiles ? ` | Owner: ${ownerNameForQueueItem(item)}` : ""}
                   </div>
 
                   <div className="review-row">
@@ -1507,6 +1813,7 @@ function App() {
                 >
                   <div className="review-source" title={item.mention.source}>
                     Source: {item.mention.source}
+                    {hasMultipleProfiles ? ` | Owner: ${ownerNameForQueueItem(item)}` : ""}
                   </div>
 
                   <div className="review-row">
@@ -4010,6 +4317,158 @@ function loadShowAllUsers() {
 
 function saveShowAllUsers(value) {
   saveStoredString(SHOW_ALL_USERS_STORAGE_KEY, value ? "1" : "0");
+}
+
+function sanitizeCloudSpaceKey(value) {
+  const trimmed = String(value || "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .toLowerCase();
+  if (!trimmed) return "";
+  if (!/^[a-z0-9_-]{3,80}$/.test(trimmed)) return "";
+  return trimmed;
+}
+
+function sanitizeCloudSyncSettings(value) {
+  const input = value && typeof value === "object" ? value : {};
+  return {
+    spaceKey: sanitizeCloudSpaceKey(input.spaceKey) || CLOUD_SYNC_DEFAULT_SPACE_KEY,
+    autoSync: input.autoSync === true || (input.autoSync == null && CLOUD_SYNC_AUTO_SAVE_DEFAULT)
+  };
+}
+
+function loadCloudSyncSettings() {
+  const fallback = {
+    spaceKey: CLOUD_SYNC_DEFAULT_SPACE_KEY,
+    autoSync: CLOUD_SYNC_AUTO_SAVE_DEFAULT
+  };
+
+  try {
+    const raw = localStorage.getItem(CLOUD_SYNC_SETTINGS_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return sanitizeCloudSyncSettings(parsed);
+  } catch {
+    return fallback;
+  }
+}
+
+function saveCloudSyncSettings(value) {
+  const safe = sanitizeCloudSyncSettings(value);
+  try {
+    localStorage.setItem(CLOUD_SYNC_SETTINGS_STORAGE_KEY, JSON.stringify(safe));
+  } catch {
+    // Ignore storage write failures.
+  }
+}
+
+function buildCloudStatePayload({ users, places }) {
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    users: normalizeUserDirectory(users || [], places || []),
+    places: sanitizePlacesForStorage(places || [])
+  };
+}
+
+function sanitizeCloudStatePayload(value) {
+  const input = value && typeof value === "object" ? value : {};
+  const places = sanitizePlacesForStorage(input.places || []);
+  const users = normalizeUserDirectory(input.users || [], places);
+  return {
+    version: Number(input.version) > 0 ? Number(input.version) : 1,
+    updatedAt: sanitizeSyncDate(input.updatedAt),
+    users,
+    places
+  };
+}
+
+function sanitizeSyncDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) return "";
+  return date.toISOString();
+}
+
+function formatSyncTimestamp(value) {
+  const iso = sanitizeSyncDate(value);
+  if (!iso) return "unknown time";
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+}
+
+function buildCloudApiUrl(spaceKey) {
+  const safeSpaceKey = sanitizeCloudSpaceKey(spaceKey);
+  if (!safeSpaceKey) {
+    throw new Error("Invalid cloud space key.");
+  }
+
+  const base = CLOUD_SYNC_API_BASE || "";
+  const root = base
+    ? base
+    : typeof window !== "undefined" && window.location
+      ? window.location.origin
+      : "";
+  if (!root) {
+    throw new Error("Cloud API base is not configured.");
+  }
+
+  const url = new URL("/api/state", root);
+  url.searchParams.set("space", safeSpaceKey);
+  return url.toString();
+}
+
+async function fetchCloudStateBySpace(spaceKey) {
+  const url = buildCloudApiUrl(spaceKey);
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(await readHttpError(response));
+  }
+  return response.json();
+}
+
+async function saveCloudStateBySpace(spaceKey, statePayload) {
+  const url = buildCloudApiUrl(spaceKey);
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(sanitizeCloudStatePayload(statePayload))
+  });
+  if (!response.ok) {
+    throw new Error(await readHttpError(response));
+  }
+  return response.json();
+}
+
+async function readHttpError(response) {
+  const fallback = `HTTP ${response?.status || "error"}`;
+  if (!response || typeof response.text !== "function") return fallback;
+  try {
+    const text = await response.text();
+    if (!text) return fallback;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
+        return `${fallback}: ${parsed.error.trim()}`;
+      }
+    } catch {
+      // Ignore JSON parsing; return plain text if available.
+    }
+    return `${fallback}: ${text.slice(0, 140)}`;
+  } catch {
+    return fallback;
+  }
 }
 
 function getDefaultUserPreferences() {

@@ -18,6 +18,13 @@ This folder contains both structured JSON entities and runtime config.
 - `app-data.js`: parser/import/geocoder tuning, event bootstrap settings, visual grouping colors.
 - `user-data.js`: local storage keys, migration keys, and user defaults.
 
+`app-data.js` also controls cloud sync behavior:
+- `cloudSync.enabled`
+- `cloudSync.apiBase`
+- `cloudSync.defaultSpaceKey`
+- `cloudSync.autoLoadOnStart`
+- `cloudSync.autoSync`
+
 ## Typical edits before going live
 - Replace sample rows in JSON files with your own production data.
 - Tune data bootstrap behavior in `app-data.js`:

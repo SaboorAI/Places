@@ -12,6 +12,19 @@ const APP_CONFIG = {
     // Leave blank to use first user in users.json.
     eventUserId: "user_saboor"
   },
+  cloudSync: {
+    enabled: true,
+    // Keep empty for same-origin Worker API. Set full URL for external API.
+    apiBase: "",
+    // Shared logical namespace in KV.
+    defaultSpaceKey: "global",
+    // If true, app loads from cloud on first render.
+    autoLoadOnStart: false,
+    // If true, app saves to cloud automatically after changes.
+    autoSync: false,
+    // Debounce for autosave writes.
+    debounceMs: 1400
+  },
   importer: {
     requestDelayMs: 180,
     geocoderMaxRetries: 3,
