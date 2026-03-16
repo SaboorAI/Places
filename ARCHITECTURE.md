@@ -47,13 +47,14 @@ The app infers route sequencing from chronological event order.
 - Endpoint: `GET /api/state?space=<key>`
 - Endpoint: `PUT /api/state?space=<key>`
 - Storage: Cloudflare KV binding `STATE_STORE`
-- Static assets are served by Worker via `ASSETS` binding (`wrangler.toml`).
+- Static assets are served by Worker via `ASSETS` binding from `public/` (`wrangler.toml`).
 
 Deployment quickstart:
-1. `npx wrangler kv namespace create STATE_STORE`
-2. `npx wrangler kv namespace create STATE_STORE --preview`
-3. Put returned IDs into `wrangler.toml` (`id`, `preview_id`)
-4. `npx wrangler deploy`
+1. `npx wrangler deploy`
+2. Optional cloud sync: `npx wrangler kv namespace create STATE_STORE`
+3. Optional cloud sync preview: `npx wrangler kv namespace create STATE_STORE --preview`
+4. Put returned IDs into `wrangler.toml` (`id`, `preview_id`) and set `APP_CONFIG.cloudSync.enabled = true`
+5. Redeploy with `npx wrangler deploy`
 
 State payload contract:
 - `version`

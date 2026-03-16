@@ -11,7 +11,7 @@
   const ALLOWED_EVENT_TYPES = new Set(["visit", "lived", "studied", "work"]);
 
   async function loadModel(options = {}) {
-    const basePath = String(options.basePath || "data").replace(/\/+$/, "");
+    const basePath = String(options.basePath || "/data").replace(/\/+$/, "");
 
     const [citiesPayload, usersPayload, tripsPayload, eventsPayload] = await Promise.all([
       fetchJson(`${basePath}/${DATA_FILES.cities}`),

@@ -112,11 +112,11 @@ const ORBITAL_PIXEL_RATIO_CAP_SATELLITE = 1.45;
 const geocodeCache = new Map();
 let nominatimNextAllowedAt = 0;
 const DATA_MODEL_BOOTSTRAP_ENABLED = DATA_MODEL_CONFIG.enabled !== false;
-const DATA_MODEL_BASE_PATH = String(DATA_MODEL_CONFIG.basePath || "data");
+const DATA_MODEL_BASE_PATH = String(DATA_MODEL_CONFIG.basePath || "/data");
 const DATA_MODEL_SEED_ON_EMPTY = DATA_MODEL_CONFIG.seedFromEventsOnEmpty !== false;
 const DATA_MODEL_MERGE_WITH_LOCAL = DATA_MODEL_CONFIG.mergeWithLocal === true;
 const DATA_MODEL_USER_ID = String(DATA_MODEL_CONFIG.eventUserId || "").trim();
-const CLOUD_SYNC_ENABLED = false;
+const CLOUD_SYNC_ENABLED = CLOUD_SYNC_CONFIG.enabled !== false;
 const CLOUD_SYNC_API_BASE = String(CLOUD_SYNC_CONFIG.apiBase || "")
   .trim()
   .replace(/\/+$/, "");

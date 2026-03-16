@@ -4,7 +4,8 @@
 const APP_CONFIG = {
   dataModel: {
     enabled: true,
-    basePath: "data",
+    // Absolute path keeps data loading stable if Cloudflare serves SPA fallbacks on nested URLs.
+    basePath: "/data",
     // If true, locationEvents seed the map only when local storage is empty.
     seedFromEventsOnEmpty: true,
     // If true, keep local places and append event-driven places.
@@ -13,7 +14,8 @@ const APP_CONFIG = {
     eventUserId: "user_saboor"
   },
   cloudSync: {
-    enabled: true,
+    // Enable after configuring STATE_STORE in wrangler.toml.
+    enabled: false,
     // Keep empty for same-origin Worker API. Set full URL for external API.
     apiBase: "",
     // Shared logical namespace in KV.
