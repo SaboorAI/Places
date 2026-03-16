@@ -12,6 +12,10 @@ export default {
       return handleStateApi(request, env, url);
     }
 
+    if (url.pathname === "/api/chat") {
+      return handleChatApi(request, env);
+    }
+
     if (env.ASSETS && typeof env.ASSETS.fetch === "function") {
       return env.ASSETS.fetch(request);
     }
@@ -19,6 +23,102 @@ export default {
     return new Response("Not Found", { status: 404 });
   }
 };
+
+async function handleChatApi(request, env) {
+  const corsHeaders = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "POST,OPTIONS",
+    "access-control-allow-headers": "content-type",
+    "access-control-max-age": "86400"
+  };
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders
+    });
+  }
+
+  if (request.method !== "POST") {
+    return jsonResponse({ ok: false, error: "Use POST for /api/chat" }, 405, corsHeaders);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ ok: false, error: "Body must be JSON" }, 400, corsHeaders);
+  }
+
+  const userMessage = String(body.message || "").trim();
+  if (!userMessage) {
+    return jsonResponse({ ok: false, error: "Missing 'message' field" }, 400, corsHeaders);
+  }
+
+  const apiKey = env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return jsonResponse(
+      { ok: false, error: "Server missing ANTHROPIC_API_KEY secret" },
+      500,
+      corsHeaders
+    );
+  }
+
+  const payload = {
+    model: "claude-3-5-sonnet-20241022",
+    max_tokens: 256,
+    system: "You are a friendly travel guide. When the user asks about a country, give a concise overview of that country.",
+    messages: [
+      {
+        role: "user",
+        content: userMessage
+      }
+    ]
+  };
+
+  let claudeRes;
+  try {
+    claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch {
+    return jsonResponse({ ok: false, error: "Network error calling Claude" }, 502, corsHeaders);
+  }
+
+  if (!claudeRes.ok) {
+    const text = await claudeRes.text();
+    return jsonResponse(
+      {
+        ok: false,
+        error: "Claude API error",
+        status: claudeRes.status,
+        body: text
+      },
+      502,
+      corsHeaders
+    );
+  }
+
+  const data = await claudeRes.json();
+  const textBlock =
+    Array.isArray(data.content) && data.content.find((block) => block.type === "text");
+  const reply = textBlock ? String(textBlock.text || "").trim() : "";
+
+  return jsonResponse(
+    {
+      ok: true,
+      reply
+    },
+    200,
+    corsHeaders
+  );
+}
 
 async function handleStateApi(request, env, url) {
   const corsHeaders = buildCorsHeaders(request);

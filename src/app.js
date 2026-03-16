@@ -406,6 +406,10 @@ function App() {
   const unmatchedSectionRef = useRef(null);
   const importedSectionRef = useRef(null);
 
+  const [chatInput, setChatInput] = useState("");
+  const [chatReply, setChatReply] = useState("");
+  const [isChatLoading, setIsChatLoading] = useState(false);
+
   const placesById = useMemo(
     () => new Map(places.map((place) => [place.id, place])),
     [places]
@@ -1000,6 +1004,43 @@ function App() {
       setStatus(`${summary} | geocoder rate-limited, use Unmatched -> Find Match`);
     } else {
       setStatus(summary);
+    }
+  }
+
+  async function handleChatSubmit(event) {
+    event.preventDefault();
+    const message = chatInput.trim();
+    if (!message || isChatLoading) return;
+
+    setIsChatLoading(true);
+    setChatReply("");
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ message })
+      });
+
+      if (!response.ok) {
+        setChatReply("There was a problem talking to the travel guide. Please try again.");
+        return;
+      }
+
+      const data = await response.json();
+      if (data && data.ok && typeof data.reply === "string") {
+        setChatReply(data.reply);
+      } else if (data && data.error) {
+        setChatReply(String(data.error));
+      } else {
+        setChatReply("Unexpected response from the travel guide.");
+      }
+    } catch (error) {
+      setChatReply("Network error. Please check your connection and try again.");
+    } finally {
+      setIsChatLoading(false);
     }
   }
 
@@ -1679,6 +1720,28 @@ function App() {
             {isImporting ? "Matching Places..." : "Import Places"}
           </button>
         </form>
+
+        <section className="chat-section">
+          <h2>Travel Guide</h2>
+          <p>Which country do you want to know more about?</p>
+          <form className="chat-form" onSubmit={handleChatSubmit}>
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(event) => setChatInput(event.target.value)}
+              placeholder="Type a country name, e.g., Japan"
+              disabled={isChatLoading}
+            />
+            <button type="submit" disabled={isChatLoading || !chatInput.trim()}>
+              {isChatLoading ? "Asking Claude..." : "Ask"}
+            </button>
+          </form>
+          {chatReply && (
+            <div className="chat-reply">
+              <p>{chatReply}</p>
+            </div>
+          )}
+        </section>
 
         <p className="status" aria-live="polite">
           {status}
