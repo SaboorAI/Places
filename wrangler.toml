@@ -1,4 +1,4 @@
-name = "places-life-map"
+name = "places"
 main = "worker/index.js"
 compatibility_date = "2026-03-09"
 
