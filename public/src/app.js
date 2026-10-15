@@ -256,9 +256,10 @@ const MAP_STYLE_CONFIG = {
     label: "Satellite",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     options: {
-      maxZoom: 18,
+      maxZoom: 19,
+      maxNativeZoom: 19,
       attribution:
-        "Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community"
+        "Tiles &copy; Esri &mdash; Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community"
     }
   }
 };
@@ -1610,7 +1611,7 @@ function App() {
                     key={id}
                     type="button"
                     className={mapStyle === id ? "active" : ""}
-                    onClick={() => setMapStyle(id)}
+                    onClick={() => { setMapStyle(id); if (id === "satellite") setMapShape("panel"); }}
                   >
                     {style.label}
                   </button>
@@ -2136,7 +2137,11 @@ function App() {
 
       <section className={`map-wrap map-shape-${mapShape}`} aria-label="Your world map">
         <div className="map-heading"><div><p className="eyebrow">THE WORLD, THROUGH YOUR EYES</p><h2>Your world, mapped.</h2><p>{showAllUsers ? "Everyone’s" : `${scopeLabel}’s`} journeys, all in one place.</p></div>
-          <div className="map-view-toggle segmented" aria-label="Map view"><button type="button" className={mapShape === "orbital" ? "active" : ""} aria-pressed={mapShape === "orbital"} onClick={() => setMapShape("orbital")}>Globe</button><button type="button" className={mapShape === "panel" ? "active" : ""} aria-pressed={mapShape === "panel"} onClick={() => setMapShape("panel")}>Map</button></div>
+          <div className="map-view-toggle segmented" aria-label="Map view">
+            <button type="button" className={mapShape === "orbital" ? "active" : ""} aria-pressed={mapShape === "orbital"} onClick={() => setMapShape("orbital")}>Globe</button>
+            <button type="button" className={mapShape === "panel" && mapStyle !== "satellite" ? "active" : ""} aria-pressed={mapShape === "panel" && mapStyle !== "satellite"} onClick={() => { setMapShape("panel"); if (mapStyle === "satellite") setMapStyle("dark"); }}>Map</button>
+            <button type="button" className={mapShape === "panel" && mapStyle === "satellite" ? "active" : ""} aria-pressed={mapShape === "panel" && mapStyle === "satellite"} onClick={() => { setMapStyle("satellite"); setMapShape("panel"); }}>Satellite</button>
+          </div>
         </div>
         <div className="atlas-stats">
           <button type="button" onClick={() => scrollToSection(importedSectionRef)}><strong>{importedCount.toString().padStart(2, "0")}</strong><span>Places explored</span></button>
@@ -2169,7 +2174,7 @@ function App() {
           />
         )}
         </MapBoundary>
-        <div className="map-footer"><span>{mapShape === "orbital" ? "AN ATLAS IN MOTION" : "A DIFFERENT PERSPECTIVE"}</span><span>Drag to explore · Select a place to discover</span></div>
+        <div className="map-footer"><span>{mapShape === "orbital" ? "AN ATLAS IN MOTION" : "A DIFFERENT PERSPECTIVE"}</span><span>{mapShape === "panel" ? "Scroll or pinch to zoom · Drag to explore" : "Drag to explore · Select a place to discover"}</span></div>
       </section>
     </main>
   );
@@ -2197,6 +2202,10 @@ function LeafletMap({
   const pathLayerRef = useRef(null);
   const markerByPlaceIdRef = useRef(new Map());
   const tileLayerRef = useRef(null);
+  const fittedPointsRef = useRef(null);
+  const [tileStatus, setTileStatus] = useState("loading");
+  const [tileAttempt, setTileAttempt] = useState(0);
+  const maxZoom = (MAP_STYLE_CONFIG[mapStyle] || MAP_STYLE_CONFIG.dark).options.maxZoom;
   const [zoomLevel, setZoomLevel] = useState(2);
 
   useEffect(() => {
@@ -2205,16 +2214,13 @@ function LeafletMap({
     const map = L.map(hostRef.current, {
       worldCopyJump: true,
       minZoom: 2,
-      maxZoom: 18,
-      scrollWheelZoom: false,
+      maxZoom,
+      scrollWheelZoom: true,
+      touchZoom: true,
       zoomControl: false,
       zoomSnap: 0.1,
       zoomDelta: 0.5
     });
-
-    const initialLayer = createTileLayer(mapStyle);
-    initialLayer.addTo(map);
-    tileLayerRef.current = initialLayer;
 
     map.setView([20, 0], 2);
     setTimeout(() => map.invalidateSize(), 0);
@@ -2250,10 +2256,22 @@ function LeafletMap({
       mapRef.current.removeLayer(tileLayerRef.current);
     }
 
+    const map = mapRef.current;
+    map.setMaxZoom(maxZoom);
     const nextLayer = createTileLayer(mapStyle);
-    nextLayer.addTo(mapRef.current);
+    let hadError = false;
+    setTileStatus("loading");
+    nextLayer.on("loading", () => { hadError = false; setTileStatus("loading"); });
+    nextLayer.on("tileerror", () => { hadError = true; setTileStatus("error"); });
+    nextLayer.on("load", () => setTileStatus(hadError ? "error" : "ready"));
+    nextLayer.addTo(map);
     tileLayerRef.current = nextLayer;
-  }, [mapStyle]);
+    return () => {
+      nextLayer.off();
+      map.removeLayer(nextLayer);
+      if (tileLayerRef.current === nextLayer) tileLayerRef.current = null;
+    };
+  }, [mapStyle, maxZoom, tileAttempt]);
 
   useEffect(() => {
     if (!mapRef.current || !markerLayerRef.current || !pathLayerRef.current) return;
@@ -2264,12 +2282,15 @@ function LeafletMap({
     pathLayer.clearLayers();
     markerByPlaceIdRef.current.clear();
 
-    if (places.length === 0) {
-      mapRef.current.setView([20, 0], 2);
+    const pointPlaces = getPointPlaces(places);
+    // Style, selection, and path changes must not reset a user's camera.
+    const pointsKey = JSON.stringify(pointPlaces.map(p => [p.id, p.lat, p.lng]));
+    const shouldFit = fittedPointsRef.current !== pointsKey;
+    fittedPointsRef.current = pointsKey;
+    if (pointPlaces.length === 0) {
+      if (shouldFit) mapRef.current.setView([20, 0], 2);
       return;
     }
-
-    const pointPlaces = getPointPlaces(places);
 
     const bounds = [];
 
@@ -2332,9 +2353,9 @@ function LeafletMap({
       }
     }
 
-    if (bounds.length === 1) {
+    if (shouldFit && bounds.length === 1) {
       mapRef.current.setView(bounds[0], computeLeafletAutoZoom(pointPlaces));
-    } else if (bounds.length > 1) {
+    } else if (shouldFit && bounds.length > 1) {
       const targetZoom = computeLeafletAutoZoom(pointPlaces);
       mapRef.current.fitBounds(bounds, {
         padding: [32, 32],
@@ -2392,10 +2413,13 @@ function LeafletMap({
     <div
       className={`leaflet-map map-surface map-theme-${mapStyle}`}
       aria-label="Visited places map"
-      onWheelCapture={forwardPageScrollFromWheel}
     >
       <div ref={hostRef} className="leaflet-host" />
+      {tileStatus !== "ready" && <div className="map-tile-status" role="status">
+        {tileStatus === "loading" ? "Loading map imagery…" : <>Some map tiles couldn’t load. <button type="button" onClick={() => setTileAttempt(n => n + 1)}>Retry imagery</button><span> Or choose Map above.</span></>}
+      </div>}
       <div className="map-zoom-control">
+        <button type="button" className="map-zoom-button" aria-label="Zoom out" disabled={zoomLevel <= 2} onClick={() => mapRef.current?.zoomOut(1)}>−</button>
         <label className="map-zoom-label" htmlFor="panel-zoom">
           Zoom
         </label>
@@ -2404,12 +2428,13 @@ function LeafletMap({
           className="map-zoom-slider"
           type="range"
           min="2"
-          max="18"
+          max={String(maxZoom)}
           step="0.1"
           value={String(zoomLevel)}
           onChange={handleZoomInputChange}
           aria-label="Map zoom slider"
         />
+        <button type="button" className="map-zoom-button" aria-label="Zoom in" disabled={zoomLevel >= maxZoom} onClick={() => mapRef.current?.zoomIn(1)}>+</button>
       </div>
     </div>
   );
