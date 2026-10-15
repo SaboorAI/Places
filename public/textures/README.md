@@ -1,0 +1,1 @@
+Earth texture files are copied at build time from the locked three-globe npm dependency, example/img. Package source: https://github.com/vasturiano/three-globe . The package MIT license is included as THREE-GLOBE-LICENSE. These are the same named textures previously loaded from unpkg at runtime.
