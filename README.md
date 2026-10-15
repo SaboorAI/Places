@@ -12,7 +12,7 @@ npm test
 npm run dev
 ```
 
-`npm run dev` uses Wrangler and builds the browser assets automatically. `npm run build` compiles JSX ahead of time and bundles the locked dependencies, including one shared Three.js version. The browser does not fetch executable libraries from unpinned CDNs or compile JSX. Earth textures are local files; basemap tiles and geocoding still require an internet connection.
+`npm run dev` uses Wrangler and builds the browser assets automatically. `npm run build` compiles JSX ahead of time and bundles the locked dependencies, including one shared Three.js version. The browser does not fetch executable libraries from unpinned CDNs or compile JSX. Earth textures are copied locally from the locked dependency during the build. Dark/light/OSM maps use the canonical OpenStreetMap raster endpoint (dark/light styled with CSS), replacing CARTO tiles that required an API key; basemap tiles and geocoding still require an internet connection.
 
 ```sh
 npm run build
@@ -61,3 +61,5 @@ Before merging, visually check desktop and narrow mobile layouts, globe rotation
 - Geocoding and tile services remain external dependencies. No API key is required by the current geocoders.
 
 See [AUDIT.md](AUDIT.md) for the observed production issues and [ARCHITECTURE.md](ARCHITECTURE.md) for the existing data model.
+
+OpenStreetMap tiles use normal browser caching and visible attribution. This is suitable for normal interactive use; do not add bulk downloads, offline prefetching, or cache bypass. For higher traffic, configure an appropriately licensed tile provider. Policy: https://operations.osmfoundation.org/policies/tiles/ .

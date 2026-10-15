@@ -222,28 +222,26 @@ const COUNTRY_INDEX = buildCountryIndex(COUNTRY_ALIASES);
 const MAP_STYLE_CONFIG = {
   dark: {
     label: "Dark",
-    url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     options: {
-      subdomains: "abcd",
-      maxZoom: 20,
-      attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }
   },
   light: {
     label: "Light",
-    url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     options: {
-      subdomains: "abcd",
-      maxZoom: 20,
-      attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }
   },
   standard: {
     label: "OSM",
-    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     options: {
       maxZoom: 19,
-      attribution: "&copy; OpenStreetMap contributors"
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }
   },
   terrain: {
@@ -2392,7 +2390,7 @@ function LeafletMap({
 
   return (
     <div
-      className="leaflet-map map-surface"
+      className={`leaflet-map map-surface map-theme-${mapStyle}`}
       aria-label="Visited places map"
       onWheelCapture={forwardPageScrollFromWheel}
     >
@@ -4265,9 +4263,9 @@ function wrapLongitude(lng) {
 function createTileLayer(styleId) {
   const style = MAP_STYLE_CONFIG[styleId] || MAP_STYLE_CONFIG.dark;
   return L.tileLayer(style.url, {
-    detectRetina: true,
+    detectRetina: false,
     updateWhenIdle: true,
-    keepBuffer: 4,
+    keepBuffer: 2,
     ...style.options
   });
 }

@@ -1015,3 +1015,7 @@ h2 { font-size: 16px; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/* Theme only the raster pane: attribution, pins and controls retain contrast. */
+.map-theme-dark .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) saturate(.35) brightness(.8); }
+.map-theme-light .leaflet-tile-pane { filter: grayscale(.7) brightness(1.03); }

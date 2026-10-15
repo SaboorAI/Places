@@ -15,6 +15,8 @@
 3. Fresh browser initially selected `user_local` (Me) while starter places belonged to `user_saboor`. The page showed zero places despite loading ten events.
 4. Source used `claude-3-5-sonnet-20241022`, retired by Anthropic. This would remain a separate blocker after adding the missing key. Reference: https://platform.claude.com/docs/en/about-claude/model-deprecations
 
+5. Cloudflare branch preview revealed CARTO raster tiles rendering “API KEY REQUIRED”. Dark/light layers now use the canonical OpenStreetMap tile URL with local CSS styling, preserved attribution and browser caching.
+
 ## Changes
 
 - Locked npm dependency graph; production esbuild bundle; one shared Three.js; locally served globe textures; no runtime Babel or executable CDN dependencies.
@@ -28,7 +30,7 @@
 
 Production browser inspection and the missing-secret request were read-only checks except for a short travel-guide question. No saved travel data or live Worker configuration was changed.
 
-Production build, Node tests, and Wrangler dry-run packaging are the automated gates. The React tests replace map renderers and provider calls with test doubles. Browser preview could not connect to the local development host in this environment; no visual or real WebGL pass is claimed. A real AI response also requires the owner's Cloudflare secret and provider access. Keep this as a draft until those checks are complete.
+Production build, Node tests, and Wrangler dry-run packaging are the automated gates. The React tests replace map renderers and provider calls with test doubles. The local preview was unreachable, but the connected Cloudflare build generated a working branch preview. Desktop layout, startup profile, map fallback, and map settings were inspected there. This browser reports WebGL disabled; real 3D rendering and mobile-device checks remain unverified. A real AI response also requires the owner's Cloudflare secret and provider access. Keep this as a draft until those checks are complete.
 
 ## Next feature sequence
 
