@@ -1019,3 +1019,11 @@ h2 { font-size: 16px; font-weight: 500; }
 /* Theme only the raster pane: attribution, pins and controls retain contrast. */
 .map-theme-dark .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) saturate(.35) brightness(.8); }
 .map-theme-light .leaflet-tile-pane { filter: grayscale(.7) brightness(1.03); }
+
+/* Detailed map imagery and accessible zoom controls. */
+.map-tile-status { position: absolute; top: 12px; left: 12px; right: 12px; z-index: 900; width: fit-content; max-width: calc(100% - 24px); padding: 9px 12px; border: 1px solid #395456; border-radius: 9px; color: #e1ede6; background: #122128ee; font-size: 12px; }
+.map-tile-status button { margin-left: 5px; padding: 4px 7px; }
+.map-zoom-button { min-width: 32px; min-height: 32px; padding: 0; border-radius: 50%; font-size: 20px; }
+.leaflet-map .map-zoom-control { max-width: calc(100% - 24px); }
+.leaflet-map .map-zoom-slider { width: clamp(70px, 16vw, 170px); min-width: 0; }
+@media (max-width: 600px) { .map-heading { flex-wrap: wrap; } .map-view-toggle { max-width: 100%; } }

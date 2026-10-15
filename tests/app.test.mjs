@@ -93,3 +93,18 @@ test('an intentionally empty saved atlas stays empty after reload',async()=>{
  assert.deepEqual(JSON.parse(storage.get('visitedPlaces.user.places.v1')),[]);
  await act(()=>renderer.unmount());
 });
+
+test('Satellite opens detailed map, persists selection, and Map returns to street tiles',async()=>{
+ const {renderer,storage}=await harness();
+ const view=renderer.root.findByProps({'aria-label':'Map view'});
+ await click(view.findAllByType('button').find(n=>n.children.join('')==='Satellite'));
+ let prefs=JSON.parse(storage.get('visitedPlaces.user.preferences.v1'));
+ assert.equal(prefs.mapShape,'panel');
+ assert.equal(prefs.mapStyle,'satellite');
+ assert.equal(view.findAllByType('button').find(n=>n.children.join('')==='Satellite').props['aria-pressed'],true);
+ await click(view.findAllByType('button').find(n=>n.children.join('')==='Map'));
+ prefs=JSON.parse(storage.get('visitedPlaces.user.preferences.v1'));
+ assert.equal(prefs.mapShape,'panel');
+ assert.equal(prefs.mapStyle,'dark');
+ await act(()=>renderer.unmount());
+});
