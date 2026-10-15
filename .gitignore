@@ -1,3 +1,9 @@
 .DS_Store
 .wrangler/
 node_modules/
+public/dist/
+public/build-info.json
+.dev.vars
+.env*
+public/textures/*.jpg
+public/textures/*.png

@@ -1,3 +1,9 @@
+import React from "react";
+import * as ReactDOM from "react-dom/client";
+import L from "leaflet";
+import Globe from "globe.gl";
+import "leaflet/dist/leaflet.css";
+
 const { useCallback, useEffect, useMemo, useRef, useState } = React;
 
 const DEFAULT_USER_STORAGE_KEYS = {
@@ -261,9 +267,9 @@ const MAP_STYLE_CONFIG = {
 
 const GLOBE_STYLE_CONFIG = {
   dark: {
-    globeImageUrl: "//unpkg.com/three-globe/example/img/earth-night.jpg",
-    bumpImageUrl: "//unpkg.com/three-globe/example/img/earth-topology.png",
-    backgroundImageUrl: "//unpkg.com/three-globe/example/img/night-sky.png",
+    globeImageUrl: "/textures/earth-night.jpg",
+    bumpImageUrl: "/textures/earth-topology.png",
+    backgroundImageUrl: "",
     backgroundColor: "rgba(0, 0, 0, 0)",
     atmosphereColor: "#6bb7ff",
     atmosphereAltitude: 0.18,
@@ -273,8 +279,8 @@ const GLOBE_STYLE_CONFIG = {
     arcDashAnimateTime: 2600
   },
   light: {
-    globeImageUrl: "//unpkg.com/three-globe/example/img/earth-blue-marble.jpg",
-    bumpImageUrl: "//unpkg.com/three-globe/example/img/earth-topology.png",
+    globeImageUrl: "/textures/earth-blue-marble.jpg",
+    bumpImageUrl: "/textures/earth-topology.png",
     backgroundImageUrl: "",
     backgroundColor: "#dce7f5",
     atmosphereColor: "#8bc8ff",
@@ -285,8 +291,8 @@ const GLOBE_STYLE_CONFIG = {
     arcDashAnimateTime: 2400
   },
   standard: {
-    globeImageUrl: "//unpkg.com/three-globe/example/img/earth-blue-marble.jpg",
-    bumpImageUrl: "//unpkg.com/three-globe/example/img/earth-topology.png",
+    globeImageUrl: "/textures/earth-blue-marble.jpg",
+    bumpImageUrl: "/textures/earth-topology.png",
     backgroundImageUrl: "",
     backgroundColor: "#cddbef",
     atmosphereColor: "#8fc5ff",
@@ -297,8 +303,8 @@ const GLOBE_STYLE_CONFIG = {
     arcDashAnimateTime: 2400
   },
   terrain: {
-    globeImageUrl: "//unpkg.com/three-globe/example/img/earth-topology.png",
-    bumpImageUrl: "//unpkg.com/three-globe/example/img/earth-topology.png",
+    globeImageUrl: "/textures/earth-topology.png",
+    bumpImageUrl: "/textures/earth-topology.png",
     backgroundImageUrl: "",
     backgroundColor: "#cfd8de",
     atmosphereColor: "#8bb7d8",
@@ -309,9 +315,9 @@ const GLOBE_STYLE_CONFIG = {
     arcDashAnimateTime: 2300
   },
   satellite: {
-    globeImageUrl: "//unpkg.com/three-globe/example/img/earth-blue-marble.jpg",
-    bumpImageUrl: "//unpkg.com/three-globe/example/img/earth-topology.png",
-    backgroundImageUrl: "//unpkg.com/three-globe/example/img/night-sky.png",
+    globeImageUrl: "/textures/earth-blue-marble.jpg",
+    bumpImageUrl: "/textures/earth-topology.png",
+    backgroundImageUrl: "",
     backgroundColor: "rgba(0, 0, 0, 0)",
     atmosphereColor: "#73b7ff",
     atmosphereAltitude: 0.17,
@@ -356,6 +362,10 @@ const CONTINENT_COLORS = {
 
 function App() {
   const initialPreferences = useMemo(loadUserPreferences, []);
+  const hadSavedProfile = useRef(Boolean(loadStoredString(ACTIVE_USER_STORAGE_KEY, "")));
+  const hadSavedPlaces = useRef(hasStoredPlaces());
+  const [activeTool, setActiveTool] = useState("explore");
+  const [guideAvailability, setGuideAvailability] = useState(null);
   const initialCloudSyncSettings = useMemo(loadCloudSyncSettings, []);
   const [userDirectory, setUserDirectory] = useState(loadUserDirectory);
   const [activeUserId, setActiveUserId] = useState(loadActiveUserId);
@@ -409,6 +419,15 @@ function App() {
   const [chatInput, setChatInput] = useState("");
   const [chatReply, setChatReply] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/health", { signal: controller.signal })
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => { if (data) setGuideAvailability(data.travelGuide === true); })
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
 
   const placesById = useMemo(
     () => new Map(places.map((place) => [place.id, place])),
@@ -551,7 +570,7 @@ function App() {
           DEFAULT_LOCAL_USER_ID;
 
         setUserDirectory((prev) => mergeUserDirectories(prev, modelUsers));
-        if (!activeUserId && resolvedUserId) {
+        if ((!hadSavedProfile.current && !hadSavedPlaces.current && places.length === 0) || !activeUserId) {
           setActiveUserId(resolvedUserId);
         }
 
@@ -574,7 +593,7 @@ function App() {
         commitPlaces((prev) => {
           const hasExisting = Array.isArray(prev) && prev.length > 0;
 
-          if (DATA_MODEL_SEED_ON_EMPTY && hasExisting && !DATA_MODEL_MERGE_WITH_LOCAL) {
+          if (DATA_MODEL_SEED_ON_EMPTY && (hasExisting || hadSavedPlaces.current) && !DATA_MODEL_MERGE_WITH_LOCAL) {
             return prev;
           }
 
@@ -678,11 +697,14 @@ function App() {
   }
 
   function scrollToSection(sectionRef) {
+    setActiveTool(sectionRef === importedSectionRef ? "explore" : "import");
+    requestAnimationFrame(() => {
     const element = sectionRef?.current;
     if (!element || typeof element.scrollIntoView !== "function") return;
     element.scrollIntoView({
       behavior: "smooth",
       block: "start"
+    });
     });
   }
 
@@ -1021,22 +1043,16 @@ function App() {
         headers: {
           "content-type": "application/json"
         },
-        body: JSON.stringify({ message })
+        body: JSON.stringify({ message }),
+        signal: AbortSignal.timeout(35000)
       });
 
-      if (!response.ok) {
-        setChatReply("There was a problem talking to the travel guide. Please try again.");
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.ok) {
+        setChatReply(data?.error || "The travel guide is temporarily unavailable. Please try again later.");
         return;
       }
-
-      const data = await response.json();
-      if (data && data.ok && typeof data.reply === "string") {
-        setChatReply(data.reply);
-      } else if (data && data.error) {
-        setChatReply(String(data.error));
-      } else {
-        setChatReply("Unexpected response from the travel guide.");
-      }
+      setChatReply(data.reply || "No reply was returned. Please try again.");
     } catch (error) {
       setChatReply("Network error. Please check your connection and try again.");
     } finally {
@@ -1432,6 +1448,7 @@ function App() {
         return;
       }
 
+      setActiveTool("explore");
       const match = placesById.get(placeId);
       if (!match) return;
 
@@ -1463,91 +1480,34 @@ function App() {
 
   return (
     <main className="app">
+      <header className="app-header">
+        <a className="brand" href="/" aria-label="Places home"><span className="brand-mark" aria-hidden="true">◎</span> places<span className="brand-period">.</span></a>
+        <span className="header-caption">A PERSONAL ATLAS</span>
+        <div className="header-actions"><span className="storage-label">Saved in this browser</span><button type="button" onClick={() => setActiveTool("import")}>+ Add places</button></div>
+      </header>
       <section className="panel">
-        <h1>Visited Places</h1>
-        <p className="subtitle">
-          Paste mixed travel notes. The importer extracts places, applies country/state context, and
-          geocodes dynamically.
-        </p>
-        {dataModelSummary && <p className="subtitle">{dataModelSummary}</p>}
-
-        <section className="view-options">
-          <div className="stats-row">
-            <button
-              type="button"
-              className="stat-chip stat-chip-btn"
-              onClick={() => scrollToSection(importedSectionRef)}
-              title="Jump to imported places"
-            >
-              Imported: {importedCount}
-            </button>
-            <button
-              type="button"
-              className="stat-chip stat-chip-btn"
-              onClick={() => scrollToSection(reviewSectionRef)}
-              title="Jump to review queue"
-            >
-              Review: {reviewQueue.length}
-            </button>
-            <button
-              type="button"
-              className="stat-chip stat-chip-btn"
-              onClick={() => scrollToSection(unmatchedSectionRef)}
-              title="Jump to unmatched queue"
-            >
-              Unmatched: {unmatchedQueue.length}
-            </button>
-            <button
-              type="button"
-              className="stat-chip stat-chip-btn"
-              onClick={() => scrollToSection(importedSectionRef)}
-              title="Jump to imported places"
-            >
-              Events: {visibleEventCount}
-            </button>
-            <button
-              type="button"
-              className="stat-chip stat-chip-btn"
-              onClick={() => scrollToSection(importedSectionRef)}
-              title="Jump to imported places"
-            >
-              Countries: {visibleCountryCount}
-            </button>
+        <div className="panel-intro"><p className="eyebrow">YOUR COLLECTION</p><h1>A life of places.</h1><p className="subtitle">Every stop has a story. Keep yours here.</p></div>
+        {/failed|unavailable/i.test(dataModelSummary) && <p className="service-notice" role="status">The starter atlas couldn’t load. Your saved places are still available. Refresh to try again.</p>}
+        <div className="profile-switcher">
+          <label htmlFor="profile-select">Viewing atlas</label>
+          <div className="profile-row">
+            <select id="profile-select" value={activeUserId} aria-label="Active profile" onChange={(event) => { setActiveUserId(normalizePlaceOwnerId(event.target.value)); setShowAllUsers(false); }}>
+              {sortedUsers.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+            </select>
+            <button className="secondary" type="button" aria-pressed={showAllUsers} onClick={() => setShowAllUsers((value) => !value)}>{showAllUsers ? "Show Active" : "Show All"}</button>
           </div>
-          {eventAnalytics && (
-            <p className="places-subtext">
-              Data model baseline: {eventAnalytics.totalEvents} events, {eventAnalytics.totalCountries} countries.
-            </p>
-          )}
-          <p className="places-subtext">Viewing scope: {scopeLabel}</p>
-
+        </div>
+        <nav className="tool-nav" aria-label="Atlas tools">
+          {[["explore", "Places"], ["import", "Import"], ["guide", "Guide"], ["settings", "Settings"]].map(([id, label]) => (
+            <button type="button" key={id} aria-pressed={activeTool === id} className={activeTool === id ? "active" : ""} onClick={() => setActiveTool(id)}>{label}</button>
+          ))}
+        </nav>
+        <section className="view-options" hidden={activeTool !== "settings"}>
+          <h2>Make it your own</h2>
+          <p className="places-subtext">Profiles, backups, and map preferences.</p>
           <div className="option-grid">
             <div className="option-group">
               <span className="option-label">Profiles</span>
-              <div className="profile-row">
-                <select
-                  value={activeUserId}
-                  onChange={(event) => {
-                    setActiveUserId(normalizePlaceOwnerId(event.target.value));
-                    setShowAllUsers(false);
-                  }}
-                  aria-label="Active profile"
-                >
-                  {sortedUsers.map((entry) => (
-                    <option key={`profile-${entry.id}`} value={entry.id}>
-                      {entry.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className={showAllUsers ? "" : "secondary"}
-                  onClick={() => setShowAllUsers((prev) => !prev)}
-                  title={showAllUsers ? "Show only active user" : "Show all users together"}
-                >
-                  {showAllUsers ? "Show Active" : "Show All"}
-                </button>
-              </div>
               <div className="profile-row">
                 <input
                   className="profile-input"
@@ -1709,8 +1669,12 @@ function App() {
           </div>
         </section>
 
-        <form className="import-form" onSubmit={handleImport}>
+        <form className="import-form" hidden={activeTool !== "import"} onSubmit={handleImport}>
+          <p className="eyebrow">GROW YOUR ATLAS</p><h2>Where have you been?</h2>
+          <p className="subtitle">Paste your travel notes. We’ll find the places and let you review uncertain matches.</p>
+          <label className="option-label" htmlFor="travel-notes">Travel notes</label>
           <textarea
+            id="travel-notes"
             value={rawInput}
             onChange={(event) => setRawInput(event.target.value)}
             disabled={isImporting}
@@ -1721,34 +1685,38 @@ function App() {
           </button>
         </form>
 
-        <section className="chat-section">
+        <section className="chat-section" hidden={activeTool !== "guide"}>
+          <p className="eyebrow">A LITTLE INSPIRATION</p>
           <h2>Travel Guide</h2>
-          <p>Which country do you want to know more about?</p>
+          <p className="subtitle">Get to know your next destination. Ask about a country, its highlights, or its culture.</p>
+          {guideAvailability === false && <p className="service-notice" role="status">The travel guide isn’t connected yet. Your atlas and place importing are still available.</p>}
           <form className="chat-form" onSubmit={handleChatSubmit}>
             <input
               type="text"
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
+              aria-label="Ask the travel guide"
+              maxLength={2000}
               placeholder="Type a country name, e.g., Japan"
               disabled={isChatLoading}
             />
-            <button type="submit" disabled={isChatLoading || !chatInput.trim()}>
+            <button type="submit" disabled={isChatLoading || !chatInput.trim() || guideAvailability === false}>
               {isChatLoading ? "Asking Claude..." : "Ask"}
             </button>
           </form>
           {chatReply && (
-            <div className="chat-reply">
+            <div className="chat-reply" aria-live="polite">
               <p>{chatReply}</p>
             </div>
           )}
         </section>
 
-        <p className="status" aria-live="polite">
+        <p className="status" hidden={activeTool !== "import" && status === STATUS_DEFAULT} aria-live="polite">
           {status}
         </p>
 
         {reviewQueue.length > 0 && (
-          <section className="review-panel" ref={reviewSectionRef}>
+          <section className="review-panel" hidden={activeTool !== "import"} ref={reviewSectionRef}>
             <div className="review-header">
               <h2>Needs Review ({reviewQueue.length})</h2>
               <button type="button" className="secondary" onClick={approveAllReview}>
@@ -1854,7 +1822,7 @@ function App() {
         )}
 
         {unmatchedQueue.length > 0 && (
-          <section className="unmatched-panel" ref={unmatchedSectionRef}>
+          <section className="unmatched-panel" hidden={activeTool !== "import"} ref={unmatchedSectionRef}>
             <div className="review-header">
               <h2>Unmatched ({unmatchedQueue.length})</h2>
             </div>
@@ -1962,25 +1930,26 @@ function App() {
           </section>
         )}
 
-        <section className="places-panel" ref={importedSectionRef}>
+        <section className="places-panel" hidden={activeTool !== "explore"} ref={importedSectionRef}>
           <div className="places-header">
-            <h2>Imported Places ({importedCount})</h2>
+            <h2>Your places <span className="count-badge">{importedCount}</span></h2>
           </div>
           <input
             className="places-filter"
             type="text"
             value={placeFilter}
             onChange={(event) => setPlaceFilter(event.target.value)}
-            placeholder="Search city, country, source line..."
+            aria-label="Search places"
+            placeholder="Search places, countries, memories…"
           />
           <p className="places-subtext">
             Showing {filteredPlaces.length} of {importedCount} in current scope
           </p>
         </section>
 
-        <div className="place-groups">
+        <div className="place-groups" hidden={activeTool !== "explore"}>
           {groupedPlaces.length === 0 && (
-            <div className="empty-state">No places match your current filter.</div>
+            <div className="empty-state"><strong>{placeFilter ? "No matching places" : "Your story starts somewhere."}</strong><p>{placeFilter ? "Try a different city, country, or memory." : "Import your first trip or choose another profile to explore."}</p><button type="button" className="secondary" onClick={() => placeFilter ? setPlaceFilter("") : setActiveTool("import")}>{placeFilter ? "Clear search" : "Add your first places"}</button></div>
           )}
 
           {groupedPlaces.map((group) => (
@@ -2167,7 +2136,17 @@ function App() {
         </div>
       </section>
 
-      <section className={`map-wrap map-shape-${mapShape}`}>
+      <section className={`map-wrap map-shape-${mapShape}`} aria-label="Your world map">
+        <div className="map-heading"><div><p className="eyebrow">THE WORLD, THROUGH YOUR EYES</p><h2>Your world, mapped.</h2><p>{showAllUsers ? "Everyone’s" : `${scopeLabel}’s`} journeys, all in one place.</p></div>
+          <div className="map-view-toggle segmented" aria-label="Map view"><button type="button" className={mapShape === "orbital" ? "active" : ""} aria-pressed={mapShape === "orbital"} onClick={() => setMapShape("orbital")}>Globe</button><button type="button" className={mapShape === "panel" ? "active" : ""} aria-pressed={mapShape === "panel"} onClick={() => setMapShape("panel")}>Map</button></div>
+        </div>
+        <div className="atlas-stats">
+          <button type="button" onClick={() => scrollToSection(importedSectionRef)}><strong>{importedCount.toString().padStart(2, "0")}</strong><span>Places explored</span></button>
+          <button type="button" onClick={() => scrollToSection(importedSectionRef)}><strong>{visibleCountryCount.toString().padStart(2, "0")}</strong><span>Countries</span></button>
+          <button type="button" onClick={() => scrollToSection(importedSectionRef)}><strong>{visibleEventCount.toString().padStart(2, "0")}</strong><span>Life events</span></button>
+          {(reviewQueue.length > 0 || unmatchedQueue.length > 0) && <button type="button" onClick={() => scrollToSection(reviewQueue.length ? reviewSectionRef : unmatchedSectionRef)}><strong>{reviewQueue.length + unmatchedQueue.length}</strong><span>To review</span></button>}
+        </div>
+        <MapBoundary key={mapShape} fallback={<><p className="service-notice">3D isn’t available on this device. You can explore all your places on the map.</p><LeafletMap places={visiblePlaces} focusTarget={mapFocus} mapStyle={mapStyle} pathMode={pathMode} selectedPlaceId={selectedPlaceId} useUserColor={showAllUsers} userColorById={userColorById} onPlaceSelect={handleMapPlaceSelect} /></>}>
         {mapShape === "orbital" ? (
           <GlobeMap
             places={visiblePlaces}
@@ -2191,9 +2170,17 @@ function App() {
             onPlaceSelect={handleMapPlaceSelect}
           />
         )}
+        </MapBoundary>
+        <div className="map-footer"><span>{mapShape === "orbital" ? "AN ATLAS IN MOTION" : "A DIFFERENT PERSPECTIVE"}</span><span>Drag to explore · Select a place to discover</span></div>
       </section>
     </main>
   );
+}
+
+class MapBoundary extends React.Component {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
 
 function LeafletMap({
@@ -2525,7 +2512,7 @@ function GlobeMap({
   useEffect(() => {
     if (!hostRef.current || globeRef.current || typeof Globe !== "function") return;
 
-    const globe = Globe()(hostRef.current);
+    const globe = new Globe(hostRef.current);
     globeRef.current = globe;
 
     globe
@@ -4611,6 +4598,13 @@ function savePlaceFilter(value) {
   saveStoredString(USER_STORAGE.placeFilter, value);
 }
 
+function hasStoredPlaces() {
+  return [USER_STORAGE.places, ...LEGACY_PLACE_STORAGE_KEYS].some((key) => {
+    try { return Array.isArray(JSON.parse(localStorage.getItem(key))); }
+    catch { return false; }
+  });
+}
+
 function loadPlaces() {
   const keys = [USER_STORAGE.places, ...LEGACY_PLACE_STORAGE_KEYS];
 
@@ -4622,7 +4616,7 @@ function loadPlaces() {
       const parsed = JSON.parse(raw);
       const sanitized = sanitizePlacesForStorage(parsed);
 
-      if (sanitized.length > 0) {
+      if (Array.isArray(parsed)) {
         if (key !== USER_STORAGE.places) savePlaces(sanitized);
         return sanitized;
       }
