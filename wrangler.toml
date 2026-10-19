@@ -14,8 +14,11 @@ command = "npm run build"
 [vars]
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
-# Optional: add a KV namespace binding before enabling browser cloud sync.
-# [[kv_namespaces]]
-# binding = "STATE_STORE"
-# id = "REPLACE_WITH_KV_NAMESPACE_ID"
-# preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID"
+# Automatically provisions durable SQLite storage on the existing places Worker.
+[[durable_objects.bindings]]
+name = "ATLAS_STORE"
+class_name = "AtlasStore"
+
+[[migrations]]
+tag = "atlas-v1"
+new_sqlite_classes = ["AtlasStore"]

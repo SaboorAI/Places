@@ -1,4 +1,5 @@
 import React from "react";
+import { AtlasSync } from "./atlasSync.js";
 import * as ReactDOM from "react-dom/client";
 import L from "leaflet";
 import Globe from "globe.gl";
@@ -69,8 +70,8 @@ const CLOUD_SYNC_CONFIG =
 const STATUS_DEFAULT =
   "Paste notes with cities/countries. The app will auto-pin confident matches and ask review for uncertain ones.";
 const RELATIONSHIP_TYPES = ["visit", "lived", "studied", "work"];
-const DEFAULT_LOCAL_USER_ID = "user_local";
-const DEFAULT_LOCAL_USER_NAME = "Me";
+const DEFAULT_LOCAL_USER_ID = "user_saboor";
+const DEFAULT_LOCAL_USER_NAME = "Saboor";
 const USER_DIRECTORY_STORAGE_KEY = "visitedPlaces.userDirectory.v1";
 const ACTIVE_USER_STORAGE_KEY = "visitedPlaces.activeUserId.v1";
 const SHOW_ALL_USERS_STORAGE_KEY = "visitedPlaces.showAllUsers.v1";
@@ -380,6 +381,31 @@ function App() {
   const [isCloudBusy, setIsCloudBusy] = useState(false);
   const [newUserName, setNewUserName] = useState("");
   const [places, setPlaces] = useState(loadPlaces);
+  const atlasRef = useRef(null);
+  const [memoryStatus, setMemoryStatus] = useState("Loading cloud memory…");
+  const [editingKey, setEditingKey] = useState("");
+  const [unlockBusy, setUnlockBusy] = useState(false);
+  useEffect(() => {
+    const sync = new AtlasSync({
+      places, storage: localStorage, fetcher: fetch,
+      onPlaces: next => { const safe = sanitizePlacesForStorage(next); savePlaces(safe); setPlaces(safe); },
+      onStatus: setMemoryStatus
+    });
+    atlasRef.current = sync;
+    sync.load();
+    const online = () => sync.load();
+    window.addEventListener?.("online", online);
+    return () => { sync.stop(); window.removeEventListener?.("online", online); };
+  }, []);
+  async function unlockMemory() {
+    setUnlockBusy(true);
+    try { await atlasRef.current.unlock(editingKey); setEditingKey(""); }
+    catch (error) { setMemoryStatus(error.message); }
+    finally { setUnlockBusy(false); }
+  }
+  function reloadCloudMemory() {
+    if (window.confirm("Replace this device's places with the latest cloud copy? Export Backup first if you want to keep local changes.")) atlasRef.current.load(true);
+  }
   const [rawInput, setRawInput] = useState(loadInputDraft);
   const [placeFilter, setPlaceFilter] = useState(loadPlaceFilter);
   const [groupMode, setGroupMode] = useState(initialPreferences.groupMode);
@@ -690,6 +716,7 @@ function App() {
     setPlaces((prev) => {
       const next = sanitizePlacesForStorage(updater(prev));
       savePlaces(next);
+      atlasRef.current?.change(next);
       return next;
     });
   }
@@ -1481,20 +1508,12 @@ function App() {
       <header className="app-header">
         <a className="brand" href="/" aria-label="Places home"><span className="brand-mark" aria-hidden="true">◎</span> places<span className="brand-period">.</span></a>
         <span className="header-caption">A PERSONAL ATLAS</span>
-        <div className="header-actions"><span className="storage-label">Saved in this browser</span><button type="button" onClick={() => setActiveTool("import")}>+ Add places</button></div>
+        <div className="header-actions"><span className="storage-label" role="status">{memoryStatus}</span><button type="button" onClick={() => setActiveTool("import")}>+ Add places</button></div>
       </header>
       <section className="panel">
         <div className="panel-intro"><p className="eyebrow">YOUR COLLECTION</p><h1>A life of places.</h1><p className="subtitle">Every stop has a story. Keep yours here.</p></div>
         {/failed|unavailable/i.test(dataModelSummary) && <p className="service-notice" role="status">The starter atlas couldn’t load. Your saved places are still available. Refresh to try again.</p>}
-        <div className="profile-switcher">
-          <label htmlFor="profile-select">Viewing atlas</label>
-          <div className="profile-row">
-            <select id="profile-select" value={activeUserId} aria-label="Active profile" onChange={(event) => { setActiveUserId(normalizePlaceOwnerId(event.target.value)); setShowAllUsers(false); }}>
-              {sortedUsers.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-            </select>
-            <button className="secondary" type="button" aria-pressed={showAllUsers} onClick={() => setShowAllUsers((value) => !value)}>{showAllUsers ? "Show Active" : "Show All"}</button>
-          </div>
-        </div>
+        <div className="profile-switcher"><span className="option-label">Saboor’s atlas</span></div>
         <nav className="tool-nav" aria-label="Atlas tools">
           {[["explore", "Places"], ["import", "Import"], ["guide", "Guide"], ["settings", "Settings"]].map(([id, label]) => (
             <button type="button" key={id} aria-pressed={activeTool === id} className={activeTool === id ? "active" : ""} onClick={() => setActiveTool(id)}>{label}</button>
@@ -1502,27 +1521,20 @@ function App() {
         </nav>
         <section className="view-options" hidden={activeTool !== "settings"}>
           <h2>Make it your own</h2>
-          <p className="places-subtext">Profiles, backups, and map preferences.</p>
+          <p className="places-subtext">Cloud memory, backups, and map preferences.</p>
           <div className="option-grid">
             <div className="option-group">
-              <span className="option-label">Profiles</span>
+              <span className="option-label">Cloud memory · Saboor</span>
+              <p className="places-subtext">Your travel history is private. Enter your private key once per browser to load your saved atlas and automatically save changes across devices.</p>
               <div className="profile-row">
-                <input
-                  className="profile-input"
-                  type="text"
-                  value={newUserName}
-                  onChange={(event) => setNewUserName(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      addUserProfile();
-                    }
-                  }}
-                  placeholder="Add another profile (name)"
-                />
-                <button type="button" onClick={addUserProfile}>
-                  Add User
-                </button>
+                <input className="profile-input" type="password" aria-label="Private editing key" placeholder="Private editing key" autoComplete="off" value={editingKey} onChange={event => setEditingKey(event.target.value)} />
+                <button type="button" onClick={unlockMemory} disabled={unlockBusy || !editingKey.trim()}>{unlockBusy ? "Unlocking…" : "Unlock atlas"}</button>
+              </div>
+              <p className="places-subtext" role="status">{memoryStatus}</p>
+              <div className="profile-row profile-actions">
+                <button type="button" className="secondary" onClick={() => atlasRef.current?.load()}>Retry sync</button>
+                <button type="button" className="secondary" onClick={reloadCloudMemory}>Reload cloud</button>
+                <button type="button" className="secondary" onClick={() => atlasRef.current?.lock()}>Lock cloud access</button>
               </div>
               <div className="profile-row profile-actions">
                 <button type="button" className="secondary" onClick={exportBackup}>
@@ -3677,7 +3689,7 @@ function placeKey(place) {
 function normalizePlaceOwnerId(value, fallback = DEFAULT_LOCAL_USER_ID) {
   const raw = String(value || "").trim();
   if (!raw) return String(fallback || DEFAULT_LOCAL_USER_ID);
-  return raw;
+  return raw === "user_local" ? "user_saboor" : raw;
 }
 
 function createUserIdFromName(name) {
@@ -3715,47 +3727,7 @@ function paletteColorForUser(userId) {
 }
 
 function normalizeUserDirectory(value, places = []) {
-  const map = new Map();
-
-  const addEntry = (rawId, rawName, rawColor) => {
-    const candidateId =
-      normalizePlaceOwnerId(rawId, "") ||
-      normalizePlaceOwnerId(createUserIdFromName(rawName), DEFAULT_LOCAL_USER_ID);
-    const id = candidateId || DEFAULT_LOCAL_USER_ID;
-    const existing = map.get(id);
-    const baseName =
-      String(rawName || "").trim() ||
-      (id === DEFAULT_LOCAL_USER_ID ? DEFAULT_LOCAL_USER_NAME : prettifyUserId(id));
-    const color = isHexColor(rawColor) ? String(rawColor).trim() : paletteColorForUser(id);
-    map.set(id, {
-      id,
-      name: baseName,
-      color,
-      createdAt: existing?.createdAt || new Date().toISOString()
-    });
-  };
-
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      if (!entry || typeof entry !== "object") continue;
-      addEntry(entry.id, entry.name, entry.color);
-    }
-  }
-
-  if (Array.isArray(places)) {
-    for (const place of places) {
-      const ownerId = normalizePlaceOwnerId(place?.userId);
-      const fallbackName =
-        ownerId === DEFAULT_LOCAL_USER_ID ? DEFAULT_LOCAL_USER_NAME : prettifyUserId(ownerId);
-      addEntry(ownerId, fallbackName, "");
-    }
-  }
-
-  if (map.size === 0) {
-    addEntry(DEFAULT_LOCAL_USER_ID, DEFAULT_LOCAL_USER_NAME, USER_PIN_PALETTE[0]);
-  }
-
-  return [...map.values()];
+  return [{ id: "user_saboor", name: "Saboor", color: "#ffa96a", createdAt: "" }];
 }
 
 function mergeUserDirectories(existing, incoming) {
@@ -4287,7 +4259,7 @@ function sanitizePlacesForStorage(value) {
       return {
         id: place.id || crypto.randomUUID(),
         eventId: String(place.eventId || ""),
-        userId: normalizePlaceOwnerId(place.userId),
+        userId: "user_saboor",
         cityId: String(place.cityId || ""),
         tripId: place.tripId ? String(place.tripId || "") : null,
         relationshipType: sanitizeRelationshipType(place.relationshipType || "visit"),
@@ -4615,7 +4587,7 @@ function loadPlaces() {
       const sanitized = sanitizePlacesForStorage(parsed);
 
       if (Array.isArray(parsed)) {
-        if (key !== USER_STORAGE.places) savePlaces(sanitized);
+        savePlaces(sanitized);
         return sanitized;
       }
     } catch {
@@ -4623,7 +4595,7 @@ function loadPlaces() {
     }
   }
 
-  return sanitizePlacesForStorage(USER_DEFAULTS_CONFIG.initialPlaces);
+  return [];
 }
 
 function savePlaces(nextPlaces) {

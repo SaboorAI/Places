@@ -3,7 +3,7 @@
 
 const APP_CONFIG = {
   dataModel: {
-    enabled: true,
+    enabled: false,
     // Absolute path keeps data loading stable if Cloudflare serves SPA fallbacks on nested URLs.
     basePath: "/data",
     // If true, locationEvents seed the map only when local storage is empty.

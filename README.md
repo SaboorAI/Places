@@ -1,6 +1,25 @@
 # Places
 
-A personal atlas for visits, places lived, study, work, and trip memories. React 18, Leaflet, Globe.gl, and a Cloudflare Worker. Data stays in the browser unless optional cloud sync is explicitly configured.
+A personal atlas for visits, places lived, study, work, and trip memories. React 18, Leaflet, Globe.gl, and a Cloudflare Worker. Saboor’s collection is loaded from durable cloud storage, with local offline edits and owner-authorized cloud access.
+
+## Saboor's persistent atlas
+
+The uploaded 2026-10-19 backup contains **91 entries**. The application preserves those entries, including their original IDs, dates, notes and map matches, and consolidates the empty legacy Me profile into Saboor. Entries are saved records, not independently verified travel history.
+
+### Privacy and access
+
+No travel backup, encrypted backup, or raw access key is committed. Travel data is imported directly through the authenticated API and stays in cloud storage and the owner’s browsers. The private random key unlocks both reads and writes; only its SHA-256 authentication verifier is public. Existing historical starter JSON in the repository predates this change and is no longer loaded by the app.
+
+Open Settings → Private editing key → Unlock atlas. Do this once on each trusted browser. The key and offline places are kept in that browser's localStorage. Lock cloud access removes the stored key, but does not erase locally cached places. Keep the key file private and export backups before clearing browser storage.
+
+### Persistence
+
+- `/api/atlas` uses the SQLite-backed `AtlasStore` Durable Object. Its Wrangler binding and migration provision on deployment to the existing `places` Worker. New storage starts empty. The owner imports a backup or saves places through the authenticated API. Redeployments never overwrite existing state, including an intentionally empty atlas.
+- First connection merges existing local memories with the saved collection. `user_local` / Me becomes `user_saboor` / Saboor. Subsequent reloads respect deletions.
+- After unlocking, changes save automatically. Offline edits reconcile against the last cloud revision on reconnection or Retry sync. Unrelated edits merge; same-record conflicts block upload and preserve local changes. Export Backup before choosing Reload cloud to discard local differences.
+- Writes atomically compare revisions and retain the previous cloud version. The unauthenticated legacy `/api/state` is retired (410). No ephemeral in-memory success fallback exists.
+- A new key requires rotating the verifier; never commit the raw key. Browser storage failure can prevent offline recovery, so retain backups.
+- App persistence does not automatically synchronize ChatGPT memory.
 
 ## Run and verify
 
@@ -42,10 +61,10 @@ The secret is not included in this repository. Supplying it and verifying a real
 
 - Country/context-aware mixed-note importer; Open-Meteo geocoding with Nominatim fallback, caching, retry logic, review, and unmatched queues.
 - 3D globe and Leaflet map; map themes, connection paths, zoom, place details, and selection.
-- Multiple local profiles and combined view; per-user places, event types, dates, notes, and tags.
+- A single Saboor profile; event types, dates, notes, and tags.
 - Country/continent grouping, search, editing, removal, backup export and merge import.
 - Existing localStorage keys and versioned JSON contracts. Saved data, including an intentionally empty atlas, takes priority over starter events.
-- Optional existing KV state API; cloud sync remains disabled.
+- Durable atlas API with owner-authorized writes, revision checks, and offline reconciliation.
 
 ## Verification scope
 
@@ -55,8 +74,8 @@ Before merging, visually check desktop and narrow mobile layouts, globe rotation
 
 ## Operational limits retained from the prototype
 
-- Local browser storage is the primary store. Profiles are not authenticated user accounts. Back up before moving devices or clearing site data.
-- The optional `/api/state` uses a space key, not authentication, and falls back to ephemeral Worker memory without KV. **Do not enable it for private data until authentication, authorization, and durable storage are added.** No cloud data was read or altered for this change.
+- Cloud storage holds the shared atlas. Browser-local changes require the private editing key to upload. Back up pending local changes before clearing site data.
+- The legacy `/api/state` endpoint is retired; the atlas never reports ephemeral Worker memory as durable storage.
 - The AI endpoint is publicly callable. Same-origin checks prevent browser cross-origin use but are not authentication. Before making paid AI widely available, configure server-side authentication/rate limits and provider spend controls.
 - Geocoding and tile services remain external dependencies. No API key is required by the current geocoders.
 

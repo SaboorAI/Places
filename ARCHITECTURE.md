@@ -41,42 +41,12 @@ The app infers route sequencing from chronological event order.
 5. Runtime places are scoped by `userId` (`active user` vs `all users` mode).
 6. Globe/panel rendering keeps working with event-aware visuals and per-user ownership.
 
-## Cloud API
+## Cloud API and memory
 
-- Worker entry: `worker/index.js`
-- Endpoint: `GET /api/state?space=<key>`
-- Endpoint: `PUT /api/state?space=<key>`
-- Storage: Cloudflare KV binding `STATE_STORE`
-- Static assets are served by Worker via `ASSETS` binding from `public/` (`wrangler.toml`).
+`worker/atlas.js` exports SQLite-backed `AtlasStore`, provisioned by the Wrangler binding and migration. GET and PUT `/api/atlas` require the private bearer key. POST `/api/atlas/unlock` validates the key. Legacy `/api/state` returns 410.
 
-Deployment quickstart:
-1. `npx wrangler deploy`
-2. Optional cloud sync: `npx wrangler kv namespace create STATE_STORE`
-3. Optional cloud sync preview: `npx wrangler kv namespace create STATE_STORE --preview`
-4. Put returned IDs into `wrangler.toml` (`id`, `preview_id`) and set `APP_CONFIG.cloudSync.enabled = true`
-5. Redeploy with `npx wrangler deploy`
+No backup is bundled or committed. The owner imports travel data using the authenticated API. Only the authentication verifier lives in `worker/owner-key.js`. The first authorized read initializes empty durable storage; saved cloud state takes precedence forever after, including empty state. PUT atomically checks revision and saves the previous state.
 
-State payload contract:
-- `version`
-- `updatedAt`
-- `users[]`
-- `places[]`
+`public/src/atlasSync.js` handles autosave, offline changes, three-way reconciliation, and conflicts. A first connection adds the cloud collection to local memories. Later connections respect deletions. Conflicting edits are preserved locally and require explicit resolution. The raw key and cached places are browser-local; Lock cloud access removes the key only. Backup export remains available.
 
-## Local Persistence
-
-- `places` are stored in localStorage with normalized `userId`.
-- `userDirectory` keeps profile metadata (id/name/color).
-- `activeUserId` and `showAllUsers` persist UI context.
-- `cloudSync` settings persist UI context (`spaceKey`, `autoSync`).
-- Backup portability:
-  - `Export Backup` writes a versioned JSON file (`users`, `places`, `preferences`).
-  - `Import Backup` merges users and places safely (dedupe by user-aware place key).
-
-## Refactor Path (Prototype -> Scalable)
-
-1. Keep JSON as the source of truth.
-2. Keep UI rendering logic separate from data loading/validation.
-3. Add timeline filters (year/range) on top of `locationEvents`.
-4. Add analytics cards based on computed aggregates.
-5. Move persistence to an API while preserving the same data contracts.
-6. Suggested production stack: Cloudflare Workers + D1 tables for users/trips/events + optional R2 backups.
+The old JSON data loader is disabled. Existing historical starter files remain for reference but are not imported into fresh atlases. New installations show a private-atlas unlock prompt rather than fabricated starter events.

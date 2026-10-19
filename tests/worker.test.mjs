@@ -58,12 +58,7 @@ test('network failures, timeouts, malformed and empty replies are handled', asyn
   mock.restoreAll();
  }
 });
-test('existing state API still saves and restores per-profile events with KV', async () => {
- const storage=new Map(); const env={STATE_STORE:{get:async key=>storage.get(key),put:async(key,val)=>storage.set(key,val)}};
- const state={users:[{id:'user_saboor',name:'Saboor'}],places:[{id:'tokyo',eventId:'trip1',userId:'user_saboor',name:'Tokyo',lat:35.68,lng:139.69,relationshipType:'visit',startDate:'2025-07-27',notes:'Memory',tags:['trip']}]};
- const save=await worker.fetch(new Request('https://places.example/api/state?space=test',{method:'PUT',body:JSON.stringify(state)}),env);
- assert.equal(save.status,200);
- const load=await worker.fetch(new Request('https://places.example/api/state?space=test'),env);
- const result=(await load.json()).state;
- assert.equal(result.places[0].notes,'Memory');assert.equal(result.places[0].eventId,'trip1');assert.equal(result.users[0].id,'user_saboor');
+test('legacy unauthenticated state writes are retired', async () => {
+ const response = await worker.fetch(new Request('https://places.example/api/state?space=test',{method:'PUT',body:'{}'}),{});
+ assert.equal(response.status,410);
 });
