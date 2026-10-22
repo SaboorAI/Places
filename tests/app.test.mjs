@@ -10,14 +10,14 @@ import { create, act } from 'react-test-renderer';
 
 // Exercise the real application state and handlers. Map rendering is a test double;
 // this suite deliberately does not claim WebGL/browser visual coverage.
-async function harness(saved = {}) {
+async function harness(saved = {}, publicAtlas = { places: [] }) {
  const storage = new Map(Object.entries({"places.atlas.edit-key.v1":JSON.stringify("test-key"),...saved}));
  const appSource = (await readFile('public/src/app.js','utf8'))
   .replace(/^import .*;\n/gm,'')
   .replace(/ReactDOM.createRoot\([\s\S]*$/,'')
   .replace(/<GlobeMap\b/g,'<MapStub').replace(/<LeafletMap\b/g,'<MapStub');
  const source = (await transform(appSource + '\nglobalThis.api={App,parseMentions,mergePlaces,sanitizePlacesForStorage,scopePlacesByUser,loadPlaces};',{loader:'jsx'})).code;
- const context=vm.createContext({React,atlasSeed,AtlasSync,MapStub:()=>null,console,Intl,crypto,URL,Blob,AbortController,AbortSignal,setTimeout,clearTimeout,
+ const context=vm.createContext({React,atlasSeed,publicAtlas,AtlasSync,MapStub:()=>null,console,Intl,crypto,URL,Blob,AbortController,AbortSignal,setTimeout,clearTimeout,
   requestAnimationFrame:fn=>fn(),
   localStorage:{getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,value)},
   document:{getElementById:()=>null},
@@ -66,14 +66,15 @@ test('search, tool navigation, map mode, and disabled guide retain working handl
  assert.equal(JSON.parse(storage.get('visitedPlaces.user.preferences.v1')).mapShape,'panel');
  await act(()=>renderer.unmount());
 });
-test('backup import consolidates legacy profiles without duplicating the same event',async()=>{
+test('backup import preserves separate owners without duplicating an existing event',async()=>{
  const {renderer,storage}=await harness();
  const original=JSON.parse(storage.get('visitedPlaces.user.places.v1'));
  const file={text:async()=>JSON.stringify({users:[{id:'user_friend',name:'Friend'}],places:[original[0],{...original[0],id:'friend-event',userId:'user_friend',notes:'Friend memory'}]})};
  const input=renderer.root.findByProps({type:'file'});
  await act(async()=>input.props.onChange({target:{files:[file],value:'backup'}}));
  const updated=JSON.parse(storage.get('visitedPlaces.user.places.v1'));
- assert.equal(updated.length,91);assert.ok(updated.every(p=>p.userId==='user_saboor'));
+ assert.equal(updated.length,92);assert.equal(updated.find(p=>p.id==='friend-event').userId,'user_friend');
+ assert.deepEqual(JSON.parse(storage.get('visitedPlaces.userDirectory.v1')).map(u=>u.name),['Saboor','Friend']);
  await act(()=>renderer.unmount());
 });
 test('mixed note parser retains country context and aliases',async()=>{
@@ -93,5 +94,70 @@ test('an intentionally empty saved atlas stays empty after reload',async()=>{
  const {renderer,storage}=await harness({'visitedPlaces.activeUserId.v1':'user_saboor','visitedPlaces.user.places.v1':'[]','places.atlas.cloud-base.v1':JSON.stringify({revision:0,places:atlasSeed.places})});
  assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,0);
  assert.deepEqual(JSON.parse(storage.get('visitedPlaces.user.places.v1')),[]);
+ await act(()=>renderer.unmount());
+});
+
+test('people have separate filters, colors, and persistent profiles',async()=>{
+ const {renderer,storage}=await harness();
+ await act(()=>renderer.root.findByProps({'aria-label':'New person name'}).props.onChange({target:{value:'Alex'}}));
+ await click(button(renderer,'Add person'));
+ assert.equal(renderer.root.findByProps({'aria-label':'Filter by person'}).props.value,'user_alex');
+ assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,0);
+ const users=JSON.parse(storage.get('visitedPlaces.userDirectory.v1'));
+ assert.deepEqual(users.map(u=>u.name),['Saboor','Alex']);
+ assert.notEqual(users[0].color,users[1].color);
+ await act(()=>renderer.root.findByProps({'aria-label':'Filter by person'}).props.onChange({target:{value:'all'}}));
+ assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,91);
+ await act(()=>renderer.root.findByProps({'aria-label':'Filter by person'}).props.onChange({target:{value:'user_saboor'}}));
+ assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,91);
+ await act(()=>renderer.unmount());
+});
+
+test('cloud reload preserves another person’s local places',async()=>{
+ const friend={...atlasSeed.places[0],id:'friend-local',userId:'user_friend',notes:'Keep separate'};
+ const {renderer,storage}=await harness({'visitedPlaces.user.places.v1':JSON.stringify([friend]),'visitedPlaces.userDirectory.v1':JSON.stringify([{id:'user_friend',name:'Friend'}])});
+ let places=JSON.parse(storage.get('visitedPlaces.user.places.v1'));
+ assert.equal(places.length,92);
+ assert.equal(places.find(p=>p.id===friend.id).userId,'user_friend');
+ await click(button(renderer,'Retry sync'));
+ places=JSON.parse(storage.get('visitedPlaces.user.places.v1'));
+ assert.equal(places.length,92);
+ assert.equal(places.find(p=>p.id===friend.id).notes,'Keep separate');
+ await act(()=>renderer.root.findByProps({'aria-label':'Filter by person'}).props.onChange({target:{value:'user_friend'}}));
+ assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,1);
+ await act(()=>renderer.unmount());
+});
+
+test('public backup loads all 91 complete records without a key, even with empty saved storage',async()=>{
+ const published=JSON.parse(await readFile('public/data/saboor-atlas.json','utf8'));
+ assert.equal(published.places.length,91);
+ assert.equal(new Set(published.places.map(p=>p.id)).size,91);
+ for(const saved of [{}, {'visitedPlaces.user.places.v1':'[]'}]) {
+  const {renderer,storage}=await harness({...saved,'places.atlas.edit-key.v1':'""'},published);
+  assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,91);
+  assert.equal(button(renderer,'Remove'),undefined);
+  assert.equal(button(renderer,'Edit'),undefined);
+  assert.equal(renderer.root.findByProps({'aria-label':'Filter by person'}).props.value,'user_saboor');
+  assert.ok(renderer.root.findAllByProps({className:'place-note'}).length>0);
+  assert.equal(storage.get('places.atlas.edit-key.v1'),'""');
+  await act(()=>renderer.unmount());
+ }
+});
+
+test('public Saboor collection and personal additions filter independently',async()=>{
+ const published=JSON.parse(await readFile('public/data/saboor-atlas.json','utf8'));
+ const friend={id:'friend-public-test',userId:'user_friend',name:'Friend location',lat:10,lng:20};
+ const {renderer,storage}=await harness({'places.atlas.edit-key.v1':'""','visitedPlaces.user.places.v1':JSON.stringify([friend])},published);
+ const filter=()=>renderer.root.findByProps({'aria-label':'Filter by person'});
+ assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,91);
+ await act(()=>filter().props.onChange({target:{value:'all'}}));
+ assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,92);
+ await act(()=>filter().props.onChange({target:{value:'user_friend'}}));
+ assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,1);
+ await click(button(renderer,'Remove'));
+ assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,0);
+ await act(()=>filter().props.onChange({target:{value:'user_saboor'}}));
+ assert.equal(renderer.root.findAllByProps({className:'place-name'}).length,91);
+ assert.equal(JSON.parse(storage.get('visitedPlaces.user.places.v1')).length,0);
  await act(()=>renderer.unmount());
 });

@@ -1,4 +1,5 @@
 import React from "react";
+import publicAtlas from "../data/saboor-atlas.json";
 import { AtlasSync } from "./atlasSync.js";
 import * as ReactDOM from "react-dom/client";
 import L from "leaflet";
@@ -380,16 +381,34 @@ function App() {
   );
   const [isCloudBusy, setIsCloudBusy] = useState(false);
   const [newUserName, setNewUserName] = useState("");
-  const [places, setPlaces] = useState(loadPlaces);
+  const [localPlaces, setPlaces] = useState(loadPlaces);
+  const publishedPlaces = useMemo(() => sanitizePlacesForStorage(publicAtlas.places), []);
+  const publishedIds = useMemo(() => new Set(publishedPlaces.map(place => place.id)), [publishedPlaces]);
+  // The public collection remains visible even with empty browser/cloud storage.
+  // Keep it separate so visitors cannot erase it or upload it as their own edits.
+  const places = useMemo(() => [
+    ...publishedPlaces,
+    ...localPlaces.filter(place => !publishedIds.has(place.id))
+  ], [publishedPlaces, publishedIds, localPlaces]);
   const atlasRef = useRef(null);
   const [memoryStatus, setMemoryStatus] = useState("Loading cloud memory…");
   const [editingKey, setEditingKey] = useState("");
   const [unlockBusy, setUnlockBusy] = useState(false);
   useEffect(() => {
     const sync = new AtlasSync({
-      places, storage: localStorage, fetcher: fetch,
-      onPlaces: next => { const safe = sanitizePlacesForStorage(next); savePlaces(safe); setPlaces(safe); },
-      onStatus: setMemoryStatus
+      // The owner-authorized cloud API stores Saboor only; other profiles are local.
+      places: localPlaces.filter(place => place.userId === DEFAULT_LOCAL_USER_ID),
+      storage: localStorage, fetcher: fetch,
+      onPlaces: next => setPlaces(previous => {
+        const safe = sanitizePlacesForStorage([
+          ...next,
+          ...previous.filter(place => place.userId !== DEFAULT_LOCAL_USER_ID)
+        ]);
+        savePlaces(safe);
+        return safe;
+      }),
+      onStatus: message => setMemoryStatus(message.startsWith("Unlock your private atlas")
+        ? "Saboor’s atlas is public · personal additions saved on this device" : message)
     });
     atlasRef.current = sync;
     sync.load();
@@ -553,7 +572,11 @@ function App() {
 
   useEffect(() => {
     saveUserDirectory(normalizedUserDirectory);
-  }, [normalizedUserDirectory]);
+    // Keep inferred owners as profiles even after their last place is removed.
+    if (normalizedUserDirectory.some(user => !userDirectory.some(entry => normalizePlaceOwnerId(entry.id) === user.id))) {
+      setUserDirectory(normalizedUserDirectory);
+    }
+  }, [normalizedUserDirectory, userDirectory]);
 
   useEffect(() => {
     saveActiveUserId(activeUserId);
@@ -716,7 +739,7 @@ function App() {
     setPlaces((prev) => {
       const next = sanitizePlacesForStorage(updater(prev));
       savePlaces(next);
-      atlasRef.current?.change(next);
+      atlasRef.current?.change(next.filter(place => place.userId === DEFAULT_LOCAL_USER_ID));
       return next;
     });
   }
@@ -1086,6 +1109,7 @@ function App() {
   }
 
   function removePlace(id) {
+    if (publishedIds.has(id)) return;
     if (selectedPlaceId === id) {
       setSelectedPlaceId("");
       setMapFocus(null);
@@ -1108,7 +1132,7 @@ function App() {
   }
 
   function startEditPlace(place) {
-    if (!place) return;
+    if (!place || publishedIds.has(place.id)) return;
     setEditingPlaceId(place.id);
     setEditDraft({
       name: place.name || "",
@@ -1133,6 +1157,7 @@ function App() {
   }
 
   async function saveEditPlace(id) {
+    if (publishedIds.has(id)) return;
     const nextName = String(editDraft.name || "").trim();
     if (!nextName) {
       setStatus("Place name cannot be empty.");
@@ -1513,7 +1538,22 @@ function App() {
       <section className="panel">
         <div className="panel-intro"><p className="eyebrow">YOUR COLLECTION</p><h1>A life of places.</h1><p className="subtitle">Every stop has a story. Keep yours here.</p></div>
         {/failed|unavailable/i.test(dataModelSummary) && <p className="service-notice" role="status">The starter atlas couldn’t load. Your saved places are still available. Refresh to try again.</p>}
-        <div className="profile-switcher"><span className="option-label">Saboor’s atlas</span></div>
+        <div className="profile-switcher">
+          <label htmlFor="person-filter">Show places for</label>
+          <select id="person-filter" aria-label="Filter by person" value={showAllUsers ? "all" : activeUserId} onChange={event => {
+            setShowAllUsers(event.target.value === "all");
+            if (event.target.value !== "all") setActiveUserId(event.target.value);
+          }}>
+            <option value="all">Everyone · {places.length} places</option>
+            {sortedUsers.map(user => <option key={user.id} value={user.id}>{user.name} · {places.filter(place => place.userId === user.id).length} places</option>)}
+          </select>
+          <div className="person-legend" aria-label="People and map colors">{sortedUsers.map(user => <span key={user.id}><i style={{ backgroundColor: user.color }} aria-hidden="true" />{user.name}</span>)}</div>
+          <div className="profile-row">
+            <input aria-label="New person name" value={newUserName} onChange={event => setNewUserName(event.target.value)} placeholder="Add another person" />
+            <button type="button" onClick={addUserProfile}>Add person</button>
+          </div>
+          <p className="places-subtext">New places are added for {activeUser?.name || "Saboor"}. Other people’s places stay on this device; export a backup to keep them.</p>
+        </div>
         <nav className="tool-nav" aria-label="Atlas tools">
           {[["explore", "Places"], ["import", "Import"], ["guide", "Guide"], ["settings", "Settings"]].map(([id, label]) => (
             <button type="button" key={id} aria-pressed={activeTool === id} className={activeTool === id ? "active" : ""} onClick={() => setActiveTool(id)}>{label}</button>
@@ -1525,7 +1565,7 @@ function App() {
           <div className="option-grid">
             <div className="option-group">
               <span className="option-label">Cloud memory · Saboor</span>
-              <p className="places-subtext">Your travel history is private. Enter your private key once per browser to load your saved atlas and automatically save changes across devices.</p>
+              <p className="places-subtext">Saboor’s published collection is visible to everyone, including dates and notes. The private key is only needed for Saboor’s additional cloud records; other profiles save on this device.</p>
               <div className="profile-row">
                 <input className="profile-input" type="password" aria-label="Private editing key" placeholder="Private editing key" autoComplete="off" value={editingKey} onChange={event => setEditingKey(event.target.value)} />
                 <button type="button" onClick={unlockMemory} disabled={unlockBusy || !editingKey.trim()}>{unlockBusy ? "Unlocking…" : "Unlock atlas"}</button>
@@ -2115,6 +2155,7 @@ function App() {
                             )}
                           </div>
                           <div className="place-actions">
+                            {publishedIds.has(place.id) ? <span className="place-meta">Public collection</span> : <>
                             <button
                               type="button"
                               className="secondary"
@@ -2134,6 +2175,7 @@ function App() {
                             >
                               Remove
                             </button>
+                            </>}
                           </div>
                         </>
                       )}
@@ -2156,7 +2198,7 @@ function App() {
           <button type="button" onClick={() => scrollToSection(importedSectionRef)}><strong>{visibleEventCount.toString().padStart(2, "0")}</strong><span>Life events</span></button>
           {(reviewQueue.length > 0 || unmatchedQueue.length > 0) && <button type="button" onClick={() => scrollToSection(reviewQueue.length ? reviewSectionRef : unmatchedSectionRef)}><strong>{reviewQueue.length + unmatchedQueue.length}</strong><span>To review</span></button>}
         </div>
-        <MapBoundary key={mapShape} fallback={<><p className="service-notice">3D isn’t available on this device. You can explore all your places on the map.</p><LeafletMap places={visiblePlaces} focusTarget={mapFocus} mapStyle={mapStyle} pathMode={pathMode} selectedPlaceId={selectedPlaceId} useUserColor={showAllUsers} userColorById={userColorById} onPlaceSelect={handleMapPlaceSelect} /></>}>
+        <MapBoundary key={mapShape} fallback={<><p className="service-notice">3D isn’t available on this device. You can explore all your places on the map.</p><LeafletMap places={visiblePlaces} focusTarget={mapFocus} mapStyle={mapStyle} pathMode={pathMode} selectedPlaceId={selectedPlaceId} useUserColor={true} userColorById={userColorById} onPlaceSelect={handleMapPlaceSelect} /></>}>
         {mapShape === "orbital" ? (
           <GlobeMap
             places={visiblePlaces}
@@ -2164,7 +2206,7 @@ function App() {
             mapStyle={mapStyle}
             pathMode={pathMode}
             selectedPlaceId={selectedPlaceId}
-            useUserColor={showAllUsers}
+            useUserColor={true}
             userColorById={userColorById}
             onPlaceSelect={handleMapPlaceSelect}
           />
@@ -2175,7 +2217,7 @@ function App() {
             mapStyle={mapStyle}
             pathMode={pathMode}
             selectedPlaceId={selectedPlaceId}
-            useUserColor={showAllUsers}
+            useUserColor={true}
             userColorById={userColorById}
             onPlaceSelect={handleMapPlaceSelect}
           />
@@ -2337,7 +2379,7 @@ function LeafletMap({
       for (const { from, to } of connections) {
         const arc = buildArcPoints(from, to);
         L.polyline(arc, {
-          color: pathColor,
+          color: useUserColor ? userColorById.get(normalizePlaceOwnerId(from.userId)) || pathColor : pathColor,
           weight,
           opacity
         }).addTo(pathLayer);
@@ -2703,7 +2745,7 @@ function GlobeMap({
       endLat: Number(to.lat),
       endLng: Number(to.lng),
       altitude: arcAltitudeForPlaces(from, to),
-      color: style.arcColor,
+      color: useUserColor ? userColorById.get(normalizePlaceOwnerId(from.userId)) || style.arcColor : style.arcColor,
       stroke: pathMode === "hub" ? 0.82 : 0.7,
       dashLength: style.arcDashLength,
       dashGap: style.arcDashGap,
@@ -3727,7 +3769,17 @@ function paletteColorForUser(userId) {
 }
 
 function normalizeUserDirectory(value, places = []) {
-  return [{ id: "user_saboor", name: "Saboor", color: "#ffa96a", createdAt: "" }];
+  const users = new Map([[DEFAULT_LOCAL_USER_ID, { id: DEFAULT_LOCAL_USER_ID, name: "Saboor", color: "#ffa96a", createdAt: "" }]]);
+  const usedColors = new Set(["#ffa96a"]);
+  for (const entry of [...(Array.isArray(value) ? value : []), ...places.map(place => ({ id: place.userId }))]) {
+    const id = normalizePlaceOwnerId(entry?.id);
+    if (!entry || users.has(id)) continue;
+    let color = isHexColor(entry.color) ? entry.color : paletteColorForUser(id);
+    if (usedColors.has(color)) color = USER_PIN_PALETTE.find(candidate => !usedColors.has(candidate)) || `#${((users.size * 2654435761) >>> 8).toString(16).padStart(6, "0")}`;
+    usedColors.add(color);
+    users.set(id, { id, name: String(entry.name || "").trim() || prettifyUserId(id), color, createdAt: String(entry.createdAt || "") });
+  }
+  return [...users.values()];
 }
 
 function mergeUserDirectories(existing, incoming) {
@@ -3886,7 +3938,7 @@ function colorForPlace(place, userColorById = null) {
   if (
     userColorById &&
     typeof userColorById.get === "function" &&
-    Number(userColorById.size || 0) > 1
+    Number(userColorById.size || 0) > 0
   ) {
     const userColor = userColorById.get(ownerId);
     if (userColor) return userColor;
@@ -4259,7 +4311,7 @@ function sanitizePlacesForStorage(value) {
       return {
         id: place.id || crypto.randomUUID(),
         eventId: String(place.eventId || ""),
-        userId: "user_saboor",
+        userId: normalizePlaceOwnerId(place.userId),
         cityId: String(place.cityId || ""),
         tripId: place.tripId ? String(place.tripId || "") : null,
         relationshipType: sanitizeRelationshipType(place.relationshipType || "visit"),

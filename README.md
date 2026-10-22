@@ -1,16 +1,18 @@
 # Places
 
-A personal atlas for visits, places lived, study, work, and trip memories. React 18, Leaflet, Globe.gl, and a Cloudflare Worker. Saboor’s collection is loaded from durable cloud storage, with local offline edits and owner-authorized cloud access.
+A personal atlas for visits, places lived, study, work, and trip memories. React 18, Leaflet, Globe.gl, and a Cloudflare Worker. Saboor’s published collection loads for everyone, with separate local profiles and owner-authorized cloud access for additional records.
 
 ## Saboor's persistent atlas
 
 The uploaded 2026-10-19 backup contains **91 entries**. The application preserves those entries, including their original IDs, dates, notes and map matches, and consolidates the empty legacy Me profile into Saboor. Entries are saved records, not independently verified travel history.
 
-### Privacy and access
+### Public collection and cloud access
 
-No travel backup, encrypted backup, or raw access key is committed. Travel data is imported directly through the authenticated API and stays in cloud storage and the owner’s browsers. The private random key unlocks both reads and writes; only its SHA-256 authentication verifier is public. Existing historical starter JSON in the repository predates this change and is no longer loaded by the app.
+The owner-approved `public/data/saboor-atlas.json` publishes all 91 records from the October 19 backup, including dates, notes, tags, and original IDs. It is bundled with the app and available as a public asset. No private editing key is published.
 
-Open Settings → Private editing key → Unlock atlas. Do this once on each trusted browser. The key and offline places are kept in that browser's localStorage. Lock cloud access removes the stored key, but does not erase locally cached places. Keep the key file private and export backups before clearing browser storage.
+The published collection is always included, even in a fresh browser, with empty local storage, or without cloud access. It is read-only in the UI so visitors cannot remove or change the shared baseline. Updating this collection requires updating the published JSON and redeploying; private cloud edits do not automatically republish it.
+
+Settings → Private editing key → Unlock atlas still controls access to Saboor’s additional cloud records. Locking cloud access does not hide the published collection. Other people’s profiles are local to their browser and can be exported/imported as backups; they do not create shared online accounts.
 
 ### Persistence
 
@@ -18,8 +20,14 @@ Open Settings → Private editing key → Unlock atlas. Do this once on each tru
 - First connection merges existing local memories with the saved collection. `user_local` / Me becomes `user_saboor` / Saboor. Subsequent reloads respect deletions.
 - After unlocking, changes save automatically. Offline edits reconcile against the last cloud revision on reconnection or Retry sync. Unrelated edits merge; same-record conflicts block upload and preserve local changes. Export Backup before choosing Reload cloud to discard local differences.
 - Writes atomically compare revisions and retain the previous cloud version. The unauthenticated legacy `/api/state` is retired (410). No ephemeral in-memory success fallback exists.
-- A new key requires rotating the verifier; never commit the raw key. Browser storage failure can prevent offline recovery, so retain backups.
+- A new key requires rotating the verifier; never commit the raw key. Browser storage failure can prevent offline recovery, so retain backups. The published baseline remains available independently.
 - App persistence does not automatically synchronize ChatGPT memory.
+
+## People and filters
+
+Use **Add person** to create a profile, then select that person before importing places. The person filter shows one collection or **Everyone** together; the legend identifies each person’s map and path color. Backup imports preserve separate owners, while the legacy Me profile still maps to Saboor.
+
+Saboor’s published collection is public; additional cloud records remain protected by the existing private key. Other profiles are stored on the current device and included in exported backups; they are not uploaded to Saboor’s cloud storage. Switching profiles does not authenticate a user or create a shared account. The owner has approved the full October 19 Saboor backup for public display.
 
 ## Run and verify
 
@@ -61,7 +69,7 @@ The secret is not included in this repository. Supplying it and verifying a real
 
 - Country/context-aware mixed-note importer; Open-Meteo geocoding with Nominatim fallback, caching, retry logic, review, and unmatched queues.
 - 3D globe and Leaflet map; map themes, connection paths, zoom, place details, and selection.
-- A single Saboor profile; event types, dates, notes, and tags.
+- Saboor plus separate named profiles, per-person or Everyone filters, and consistent person colors on both maps and connection paths; event types, dates, notes, and tags.
 - Country/continent grouping, search, editing, removal, backup export and merge import.
 - Existing localStorage keys and versioned JSON contracts. Saved data, including an intentionally empty atlas, takes priority over starter events.
 - Durable atlas API with owner-authorized writes, revision checks, and offline reconciliation.
@@ -74,7 +82,7 @@ Before merging, visually check desktop and narrow mobile layouts, globe rotation
 
 ## Operational limits retained from the prototype
 
-- Cloud storage holds the shared atlas. Browser-local changes require the private editing key to upload. Back up pending local changes before clearing site data.
+- The static public JSON holds Saboor’s published atlas. Cloud storage holds additional private owner records. Browser-local owner changes require the private editing key to upload. Back up pending local changes before clearing site data.
 - The legacy `/api/state` endpoint is retired; the atlas never reports ephemeral Worker memory as durable storage.
 - The AI endpoint is publicly callable. Same-origin checks prevent browser cross-origin use but are not authentication. Before making paid AI widely available, configure server-side authentication/rate limits and provider spend controls.
 - Geocoding and tile services remain external dependencies. No API key is required by the current geocoders.
