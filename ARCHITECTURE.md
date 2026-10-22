@@ -1,52 +1,33 @@
-# Personal Life Map Architecture
+# Places architecture
 
-## Folder Structure
+`public/src/app.js` owns the React interface, mixed-note importer, per-person filters, and map state. `public/src/communitySync.js` owns public reads, editing capabilities, per-person autosave, cached revisions, offline reconciliation, and key recovery. `atlasSync.js` retains the legacy private client and exports the shared reconciliation function. Existing storage keys and Saboor’s original place IDs are preserved. Other people’s place IDs are scoped with their person ID to keep copied backup records independent in map selection and editing.
 
-```text
-/data
-  app-data.js
-  user-data.js
-  cities.json
-  users.json
-  trips.json
-  locationEvents.json
-  /schemas
-    cities.schema.json
-    users.schema.json
-    trips.schema.json
-    locationEvents.schema.json
+`worker/index.js` routes static assets, health, the optional AI guide, and storage APIs. `worker/community.js` handles the public multi-person atlas. `worker/atlas.js` exports the deployed `AtlasStore` SQLite Durable Object class. Paths beginning `/api/community` dispatch to the new handler; private `/api/atlas` behavior remains compatible.
 
-/src
-  app.js
-  dataLoader.js
-  globe.js
-  ui.js
-```
+## Durable storage
 
-## Data Model
+The existing `ATLAS_STORE` binding is reused. The old `saboor` object keeps the private atlas unchanged. The separate `community-v1` object stores a profile registry under `people`, complete collections under `person:<id>`, and previous versions under `previous:<id>`. A transaction serializes registration and revision-checked writes. There is no ephemeral success fallback and no new migration is required.
 
-- `cities`: static city reference rows.
-- `users`: user identity + home city.
-- `trips`: named trip windows.
-- `locationEvents`: timeline facts (`visit`, `lived`, `studied`, `work`) with `startDate`/`endDate`.
+Saboor initially reads the approved 91-record JSON unless a saved cloud version exists. A valid owner unlock can migrate legacy cloud records while the new revision is still zero. After a successful owner write, cloud state is authoritative; redeployments do not reset it. The static JSON remains an offline first-load fallback and a publicly accessible original snapshot.
 
-The app infers route sequencing from chronological event order.
+## Identity and ownership
 
-## Runtime Flow
+Public GET `/api/community` returns profile metadata and places without keys or key hashes. Registration creates a UUID-based person ID and accepts a cryptographically random browser-generated key. The browser persists the key before registration; the server stores its SHA-256 hash. Each PUT requires that profile’s key, matching place ownership, and the previous revision. Saboor always uses the existing owner verifier. Public profile names, backup files, and changing a filter confer no write access. Keys are bearer capabilities, not login accounts.
 
-1. `src/dataLoader.js` loads JSON files from `/data`.
-2. It sanitizes and indexes entities.
-3. It converts `locationEvents` into map-ready place rows.
-4. `src/app.js` seeds/merges these rows into the existing map state.
-5. Runtime places are scoped by `userId` (`active user` vs `all users` mode).
-6. Globe/panel rendering keeps working with event-aware visuals and per-user ownership.
+The client separates view scope from edit permission. It verifies saved keys before enabling edits, guards mutation handlers and imports, and relies on independent server authorization. Keys can be entered on another device. A local-only legacy profile can be registered if its ID is not already in use. Public registration is bounded; this is a small shared atlas rather than an unbounded identity service.
 
-## Cloud API and memory
+## Synchronization
 
-`worker/atlas.js` exports SQLite-backed `AtlasStore`, provisioned by the Wrangler binding and migration. GET and PUT `/api/atlas` require the private bearer key. POST `/api/atlas/unlock` validates the key. Legacy `/api/state` returns 410.
+`places.community.base.v1` stores per-person cloud baselines; `places.community.keys.v1` stores browser editing keys. Local place storage retains cached public collections and offline changes. A refresh reconciles editable records against their baseline; read-only records follow cloud state. Writes contain one person only. Unrelated offline and remote changes merge, while conflicting edits remain local and block that profile’s upload. Reload cloud explicitly discards pending edits only for unlocked profiles.
 
-No backup is bundled or committed. The owner imports travel data using the authenticated API. Only the authentication verifier lives in `worker/owner-key.js`. The first authorized read initializes empty durable storage; saved cloud state takes precedence forever after, including empty state. PUT atomically checks revision and saves the previous state.
+Polling runs every 30 seconds only in visible tabs and on focus/reconnection. Unchanged data preserves React state references, avoiding unnecessary map rebuilds and recentering. The UI retains status and retry controls for failed operations.
 
-`public/src/atlasSync.js` handles autosave, offline changes, three-way reconciliation, and conflicts. A first connection adds the cloud collection to local memories. Later connections respect deletions. Conflicting edits are preserved locally and require explicit resolution. The raw key and cached places are browser-local; Lock cloud access removes the key only. Backup export remains available.
+## Rendering and layout
 
-The old JSON data loader is disabled. Existing historical starter files remain for reference but are not imported into fresh atlases. New installations show a private-atlas unlock prompt rather than fabricated starter events.
+esbuild generates ESM browser assets and a lazy 3D engine chunk. Leaflet supports map-only sessions without loading WebGL. The globe uses container resizing, capped pixel ratio, visibility-based rendering, reduced-motion rotation, and a usable 2D error fallback. Desktop layout fills the available window, with an independently scrolling panel; phones use document scrolling, larger touch targets, safe-area spacing, and persistent links between map and people.
+
+The old `dataLoader.js` event data path remains available but disabled. Historical reference JSON and schemas are not the shared cloud storage source. The retired `/api/state` endpoint returns 410; the obsolete KV sync UI/configuration has been removed.
+
+## Validation
+
+`npm test` exercises API ownership, persistence and reconciliation plus real React handlers with map doubles. `npm run test:browser` exercises an isolated local Worker and Chromium across six viewport sizes and the cloud-save/recovery flow. Browser screenshots are ignored outputs; external imagery and live AI are outside the deterministic browser test.

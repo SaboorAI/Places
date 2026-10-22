@@ -1,9 +1,8 @@
 import React from "react";
 import publicAtlas from "../data/saboor-atlas.json";
-import { AtlasSync } from "./atlasSync.js";
+import { CommunitySync, COMMUNITY_BASE } from "./communitySync.js";
 import * as ReactDOM from "react-dom/client";
 import L from "leaflet";
-import Globe from "globe.gl";
 import "leaflet/dist/leaflet.css";
 
 const { useCallback, useEffect, useMemo, useRef, useState } = React;
@@ -64,10 +63,6 @@ const DATA_MODEL_CONFIG =
   EXTERNAL_APP_CONFIG.dataModel && typeof EXTERNAL_APP_CONFIG.dataModel === "object"
     ? EXTERNAL_APP_CONFIG.dataModel
     : {};
-const CLOUD_SYNC_CONFIG =
-  EXTERNAL_APP_CONFIG.cloudSync && typeof EXTERNAL_APP_CONFIG.cloudSync === "object"
-    ? EXTERNAL_APP_CONFIG.cloudSync
-    : {};
 const STATUS_DEFAULT =
   "Paste notes with cities/countries. The app will auto-pin confident matches and ask review for uncertain ones.";
 const RELATIONSHIP_TYPES = ["visit", "lived", "studied", "work"];
@@ -76,7 +71,6 @@ const DEFAULT_LOCAL_USER_NAME = "Saboor";
 const USER_DIRECTORY_STORAGE_KEY = "visitedPlaces.userDirectory.v1";
 const ACTIVE_USER_STORAGE_KEY = "visitedPlaces.activeUserId.v1";
 const SHOW_ALL_USERS_STORAGE_KEY = "visitedPlaces.showAllUsers.v1";
-const CLOUD_SYNC_SETTINGS_STORAGE_KEY = "visitedPlaces.cloudSync.settings.v1";
 const USER_PIN_PALETTE = [
   "#69d1ff",
   "#ff9ecf",
@@ -124,17 +118,6 @@ const DATA_MODEL_BASE_PATH = String(DATA_MODEL_CONFIG.basePath || "/data");
 const DATA_MODEL_SEED_ON_EMPTY = DATA_MODEL_CONFIG.seedFromEventsOnEmpty !== false;
 const DATA_MODEL_MERGE_WITH_LOCAL = DATA_MODEL_CONFIG.mergeWithLocal === true;
 const DATA_MODEL_USER_ID = String(DATA_MODEL_CONFIG.eventUserId || "").trim();
-const CLOUD_SYNC_ENABLED = CLOUD_SYNC_CONFIG.enabled !== false;
-const CLOUD_SYNC_API_BASE = String(CLOUD_SYNC_CONFIG.apiBase || "")
-  .trim()
-  .replace(/\/+$/, "");
-const CLOUD_SYNC_DEFAULT_SPACE_KEY =
-  sanitizeCloudSpaceKey(String(CLOUD_SYNC_CONFIG.defaultSpaceKey || "")) || "global";
-const CLOUD_SYNC_AUTO_LOAD_ON_START = CLOUD_SYNC_CONFIG.autoLoadOnStart === true;
-const CLOUD_SYNC_AUTO_SAVE_DEFAULT = CLOUD_SYNC_CONFIG.autoSync === true;
-const CLOUD_SYNC_DEBOUNCE_MS =
-  Number(CLOUD_SYNC_CONFIG.debounceMs) > 200 ? Number(CLOUD_SYNC_CONFIG.debounceMs) : 1400;
-
 const CONTINENT_HEADERS = new Set(
   Array.isArray(PARSER_CONFIG.continentHeaders) && PARSER_CONFIG.continentHeaders.length > 0
     ? PARSER_CONFIG.continentHeaders.map((item) => toHeader(item))
@@ -366,65 +349,86 @@ function App() {
   const hadSavedPlaces = useRef(hasStoredPlaces());
   const [activeTool, setActiveTool] = useState("explore");
   const [guideAvailability, setGuideAvailability] = useState(null);
-  const initialCloudSyncSettings = useMemo(loadCloudSyncSettings, []);
   const [userDirectory, setUserDirectory] = useState(loadUserDirectory);
   const [activeUserId, setActiveUserId] = useState(loadActiveUserId);
   const [showAllUsers, setShowAllUsers] = useState(loadShowAllUsers);
-  const [cloudSpaceKey, setCloudSpaceKey] = useState(
-    initialCloudSyncSettings.spaceKey || CLOUD_SYNC_DEFAULT_SPACE_KEY
-  );
-  const [cloudAutoSync, setCloudAutoSync] = useState(
-    initialCloudSyncSettings.autoSync === true
-  );
-  const [cloudSyncStatus, setCloudSyncStatus] = useState(
-    CLOUD_SYNC_ENABLED ? "Cloud sync ready." : "Cloud sync disabled in app config."
-  );
-  const [isCloudBusy, setIsCloudBusy] = useState(false);
   const [newUserName, setNewUserName] = useState("");
   const [localPlaces, setPlaces] = useState(loadPlaces);
   const publishedPlaces = useMemo(() => sanitizePlacesForStorage(publicAtlas.places), []);
-  const publishedIds = useMemo(() => new Set(publishedPlaces.map(place => place.id)), [publishedPlaces]);
-  // The public collection remains visible even with empty browser/cloud storage.
-  // Keep it separate so visitors cannot erase it or upload it as their own edits.
-  const places = useMemo(() => [
+  const [cloudLoaded, setCloudLoaded] = useState(() => {
+    try { return Boolean(JSON.parse(localStorage.getItem(COMMUNITY_BASE))?.user_saboor); } catch { return false; }
+  });
+  const places = useMemo(() => cloudLoaded ? localPlaces : [
     ...publishedPlaces,
-    ...localPlaces.filter(place => !publishedIds.has(place.id))
-  ], [publishedPlaces, publishedIds, localPlaces]);
+    ...localPlaces.filter(place => !publishedPlaces.some(row => row.id === place.id))
+  ], [publishedPlaces, localPlaces, cloudLoaded]);
+  const [editablePeople, setEditablePeople] = useState(() => new Set());
+  const [cloudPeople, setCloudPeople] = useState(() => new Set([DEFAULT_LOCAL_USER_ID]));
+  const [creatingPerson, setCreatingPerson] = useState(false);
+  const [recoveryVisible, setRecoveryVisible] = useState(false);
   const atlasRef = useRef(null);
-  const [memoryStatus, setMemoryStatus] = useState("Loading cloud memory…");
+  const [memoryStatus, setMemoryStatus] = useState("Connecting to cloud…");
   const [editingKey, setEditingKey] = useState("");
   const [unlockBusy, setUnlockBusy] = useState(false);
+  const canEditPerson = id => editablePeople.has(normalizePlaceOwnerId(id));
   useEffect(() => {
-    const sync = new AtlasSync({
-      // The owner-authorized cloud API stores Saboor only; other profiles are local.
-      places: localPlaces.filter(place => place.userId === DEFAULT_LOCAL_USER_ID),
-      storage: localStorage, fetcher: fetch,
+    const sync = new CommunitySync({
+      places: localPlaces,
+      storage: { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) },
+      fetcher: fetch,
+      normalize: sanitizePlacesForStorage,
       onPlaces: next => setPlaces(previous => {
-        const safe = sanitizePlacesForStorage([
-          ...next,
-          ...previous.filter(place => place.userId !== DEFAULT_LOCAL_USER_ID)
-        ]);
-        savePlaces(safe);
-        return safe;
+        if (JSON.stringify(previous) === JSON.stringify(next)) return previous;
+        savePlaces(next); return next;
       }),
-      onStatus: message => setMemoryStatus(message.startsWith("Unlock your private atlas")
-        ? "Saboor’s atlas is public · personal additions saved on this device" : message)
+      onProfiles: profiles => {
+        setUserDirectory(previous => {
+          const next = mergeUserDirectories(previous, profiles);
+          return JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
+        });
+        setCloudPeople(previous => {
+          const next = new Set(profiles.map(person => person.id));
+          return previous.size === next.size && [...next].every(id => previous.has(id)) ? previous : next;
+        });
+        setCloudLoaded(true);
+      },
+      onPermissions: next => setEditablePeople(previous => previous.size === next.size && [...next].every(id => previous.has(id)) ? previous : next),
+      onStatus: setMemoryStatus
     });
     atlasRef.current = sync;
     sync.load();
-    const online = () => sync.load();
-    window.addEventListener?.("online", online);
-    return () => { sync.stop(); window.removeEventListener?.("online", online); };
+    const refresh = () => { if (!document.hidden) sync.load(); };
+    const interval = setInterval(refresh, 30000);
+    window.addEventListener?.("online", refresh);
+    window.addEventListener?.("focus", refresh);
+    document.addEventListener?.("visibilitychange", refresh);
+    return () => {
+      clearInterval(interval); sync.stop();
+      window.removeEventListener?.("online", refresh);
+      window.removeEventListener?.("focus", refresh);
+      document.removeEventListener?.("visibilitychange", refresh);
+    };
   }, []);
   async function unlockMemory() {
     setUnlockBusy(true);
-    try { await atlasRef.current.unlock(editingKey); setEditingKey(""); }
-    catch (error) { setMemoryStatus(error.message); }
+    try {
+      const person = await atlasRef.current.unlock(editingKey);
+      setActiveUserId(person.id); setShowAllUsers(false); setEditingKey("");
+      setStatus(`Editing unlocked for ${person.name}. Changes save automatically.`);
+    } catch (error) { setMemoryStatus(error.message); }
     finally { setUnlockBusy(false); }
   }
   function reloadCloudMemory() {
-    if (window.confirm("Replace this device's places with the latest cloud copy? Export Backup first if you want to keep local changes.")) atlasRef.current.load(true);
+    if (window.confirm("Discard pending edits for your unlocked profiles and reload cloud? Export a backup first to keep them.")) atlasRef.current.load(true);
   }
+  async function enableProfileCloud() {
+    if (cloudPeople.has(activeUserId)) { setActiveTool("settings"); return; }
+    setCreatingPerson(true);
+    try { await atlasRef.current.createPerson(activeUser?.name || prettifyUserId(activeUserId), activeUserId); }
+    catch (error) { setMemoryStatus(error.message); }
+    finally { setCreatingPerson(false); }
+  }
+  useEffect(() => { setRecoveryVisible(false); }, [activeUserId]);
   const [rawInput, setRawInput] = useState(loadInputDraft);
   const [placeFilter, setPlaceFilter] = useState(loadPlaceFilter);
   const [groupMode, setGroupMode] = useState(initialPreferences.groupMode);
@@ -447,12 +451,12 @@ function App() {
     tagsText: ""
   });
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  useEffect(() => {
+    if (editingPlaceId && !editablePeople.has(localPlaces.find(place => place.id === editingPlaceId)?.userId)) setEditingPlaceId("");
+  }, [editablePeople, editingPlaceId, localPlaces]);
   const [dataModelSummary, setDataModelSummary] = useState("");
   const [eventAnalytics, setEventAnalytics] = useState(null);
   const placeListScrollTimerRef = useRef(0);
-  const cloudSaveTimerRef = useRef(0);
-  const cloudSkipNextAutoSaveRef = useRef(true);
-  const cloudAutoLoadStartedRef = useRef(false);
   const dataBootstrapStartedRef = useRef(false);
   const importFileInputRef = useRef(null);
   const reviewSectionRef = useRef(null);
@@ -527,12 +531,6 @@ function App() {
   const importedCount = visiblePlaces.length;
   const scopeLabel = showAllUsers ? "all users" : activeUser?.name || DEFAULT_LOCAL_USER_NAME;
   const hasMultipleProfiles = sortedUsers.length > 1;
-  const cloudSpaceKeySafe = useMemo(
-    () => sanitizeCloudSpaceKey(cloudSpaceKey),
-    [cloudSpaceKey]
-  );
-  const cloudSyncReady = CLOUD_SYNC_ENABLED && Boolean(cloudSpaceKeySafe);
-
   const searchablePlaceRows = useMemo(
     () =>
       sortedPlaces.map((place) => ({
@@ -585,13 +583,6 @@ function App() {
   useEffect(() => {
     saveShowAllUsers(showAllUsers);
   }, [showAllUsers]);
-
-  useEffect(() => {
-    saveCloudSyncSettings({
-      spaceKey: cloudSpaceKey,
-      autoSync: cloudAutoSync
-    });
-  }, [cloudSpaceKey, cloudAutoSync]);
 
   useEffect(() => {
     if (!DATA_MODEL_BOOTSTRAP_ENABLED) return;
@@ -665,39 +656,10 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!CLOUD_SYNC_ENABLED || !CLOUD_SYNC_AUTO_LOAD_ON_START) return;
-    if (!cloudSyncReady || cloudAutoLoadStartedRef.current) return;
-    cloudAutoLoadStartedRef.current = true;
-    handleCloudLoad();
-  }, [cloudSyncReady]);
-
-  useEffect(() => {
-    if (!cloudSyncReady || !cloudAutoSync || isCloudBusy) return;
-
-    if (cloudSkipNextAutoSaveRef.current) {
-      cloudSkipNextAutoSaveRef.current = false;
-      return;
-    }
-
-    if (cloudSaveTimerRef.current) {
-      clearTimeout(cloudSaveTimerRef.current);
-      cloudSaveTimerRef.current = 0;
-    }
-
-    cloudSaveTimerRef.current = window.setTimeout(() => {
-      cloudSaveTimerRef.current = 0;
-      handleCloudSave("auto");
-    }, CLOUD_SYNC_DEBOUNCE_MS);
-  }, [places, normalizedUserDirectory, cloudSyncReady, cloudAutoSync, isCloudBusy, cloudSpaceKeySafe]);
-
   useEffect(
     () => () => {
       if (placeListScrollTimerRef.current) {
         clearTimeout(placeListScrollTimerRef.current);
-      }
-      if (cloudSaveTimerRef.current) {
-        clearTimeout(cloudSaveTimerRef.current);
       }
     },
     []
@@ -737,9 +699,13 @@ function App() {
 
   function commitPlaces(updater) {
     setPlaces((prev) => {
-      const next = sanitizePlacesForStorage(updater(prev));
+      const proposed = sanitizePlacesForStorage(updater(prev));
+      const next = [
+        ...prev.filter(place => !atlasRef.current?.permissions.has(place.userId)),
+        ...proposed.filter(place => atlasRef.current?.permissions.has(place.userId))
+      ];
       savePlaces(next);
-      atlasRef.current?.change(next.filter(place => place.userId === DEFAULT_LOCAL_USER_ID));
+      atlasRef.current?.change(next);
       return next;
     });
   }
@@ -756,131 +722,23 @@ function App() {
     });
   }
 
-  function addUserProfile() {
-    const name = String(newUserName || "").trim();
-    if (!name) {
-      setStatus("Enter a user name to create another profile.");
-      return;
-    }
-
-    let nextUserId = createUserIdFromName(name);
-    if (!nextUserId) {
-      nextUserId = `user_${Date.now()}`;
-    }
-
-    const alreadyExists = normalizedUserDirectory.some((entry) => entry.id === nextUserId);
-    if (alreadyExists) {
-      setActiveUserId(nextUserId);
-      setShowAllUsers(false);
-      setNewUserName("");
-      setStatus(`Switched to ${name}.`);
-      return;
-    }
-
-    setUserDirectory((prev) =>
-      mergeUserDirectories(prev, [{ id: nextUserId, name, createdAt: new Date().toISOString() }])
-    );
-    setActiveUserId(nextUserId);
-    setShowAllUsers(false);
-    setNewUserName("");
-    setStatus(`Created profile "${name}". New imports will be saved under this user.`);
+  async function addUserProfile() {
+    const name = newUserName.trim();
+    if (!name || name.length > 60) { setStatus("Enter a person’s name (up to 60 characters)."); return; }
+    setCreatingPerson(true);
+    try {
+      const person = await atlasRef.current.createPerson(name);
+      setActiveUserId(person.id); setShowAllUsers(false); setNewUserName("");
+      setActiveTool("import");
+      setStatus(`Created ${person.name}. Places save to cloud automatically. Keep your editing key from Settings to use another device.`);
+    } catch (error) { setMemoryStatus(`Profile could not be created. ${error.message}`); }
+    finally { setCreatingPerson(false); }
   }
 
   function ownerNameForQueueItem(item) {
     const ownerId = normalizePlaceOwnerId(item?.ownerUserId);
     const owner = userDirectoryById.get(ownerId);
     return owner?.name || prettifyUserId(ownerId);
-  }
-
-  async function handleCloudLoad() {
-    if (!cloudSyncReady) {
-      setCloudSyncStatus("Use a valid cloud space key (letters, numbers, _ or -).");
-      return;
-    }
-
-    setIsCloudBusy(true);
-    setCloudSyncStatus(`Loading "${cloudSpaceKeySafe}"...`);
-
-    try {
-      const remotePayload = await fetchCloudStateBySpace(cloudSpaceKeySafe);
-      const remoteState = sanitizeCloudStatePayload(remotePayload?.state || remotePayload);
-      const remotePlaces = sanitizePlacesForStorage(remoteState.places || []);
-      const remoteUsers = normalizeUserDirectory(remoteState.users || [], remotePlaces);
-      let mergedPlaces = 0;
-
-      if (remoteUsers.length > 0) {
-        setUserDirectory((prev) => mergeUserDirectories(prev, remoteUsers));
-      }
-
-      if (remotePlaces.length > 0) {
-        commitPlaces((prev) => {
-          const merged = mergePlaces(prev, remotePlaces);
-          mergedPlaces = Math.max(0, merged.length - prev.length);
-          return merged;
-        });
-      }
-
-      cloudSkipNextAutoSaveRef.current = true;
-      setCloudSyncStatus(
-        `Loaded "${cloudSpaceKeySafe}" (${remotePlaces.length} places, ${remoteUsers.length} users).`
-      );
-      setStatus(`Cloud load complete. Added ${mergedPlaces} new place(s).`);
-    } catch (error) {
-      const message =
-        error && typeof error.message === "string" && error.message
-          ? error.message
-          : "Cloud load failed.";
-      setCloudSyncStatus(`Load failed: ${message}`);
-      setStatus(`Cloud load failed: ${message}`);
-    } finally {
-      setIsCloudBusy(false);
-    }
-  }
-
-  async function handleCloudSave(mode = "manual") {
-    if (!cloudSyncReady) {
-      setCloudSyncStatus("Use a valid cloud space key (letters, numbers, _ or -).");
-      if (mode === "manual") {
-        setStatus("Cloud save skipped: invalid cloud space key.");
-      }
-      return;
-    }
-
-    setIsCloudBusy(true);
-    if (mode === "manual") {
-      setCloudSyncStatus(`Saving "${cloudSpaceKeySafe}"...`);
-    }
-
-    try {
-      const payload = buildCloudStatePayload({
-        users: normalizedUserDirectory,
-        places
-      });
-
-      const result = await saveCloudStateBySpace(cloudSpaceKeySafe, payload);
-      const savedState = sanitizeCloudStatePayload(result?.state || payload);
-      const timestamp = formatSyncTimestamp(savedState.updatedAt || new Date().toISOString());
-
-      setCloudSyncStatus(
-        `Saved "${cloudSpaceKeySafe}" (${savedState.places.length} places) at ${timestamp}.`
-      );
-      if (mode === "manual") {
-        setStatus(
-          `Cloud save complete: ${savedState.places.length} places across ${savedState.users.length} profile(s).`
-        );
-      }
-    } catch (error) {
-      const message =
-        error && typeof error.message === "string" && error.message
-          ? error.message
-          : "Cloud save failed.";
-      setCloudSyncStatus(`Save failed: ${message}`);
-      if (mode === "manual") {
-        setStatus(`Cloud save failed: ${message}`);
-      }
-    } finally {
-      setIsCloudBusy(false);
-    }
   }
 
   function exportBackup() {
@@ -922,9 +780,12 @@ function App() {
     try {
       const content = await file.text();
       const parsed = JSON.parse(content);
-      const importedPlaces = sanitizePlacesForStorage(
-        parsed?.places || parsed?.data?.places || parsed?.items || []
-      );
+      const backupPlaces = sanitizePlacesForStorage(parsed?.places || parsed?.data?.places || parsed?.items || []);
+      const importedPlaces = backupPlaces.filter(place => canEditPerson(place.userId));
+      if (backupPlaces.length && !importedPlaces.length) {
+        setStatus("Unlock the matching person with their editing key before importing this backup.");
+        return;
+      }
       const importedUsers = normalizeUserDirectory(
         parsed?.users || parsed?.userDirectory || parsed?.data?.users || [],
         importedPlaces
@@ -948,7 +809,7 @@ function App() {
       }
 
       setStatus(
-        `Imported backup: ${importedPlaces.length} place(s) and ${importedUsers.length} profile(s).`
+        `Imported ${importedPlaces.length} places. ${backupPlaces.length - importedPlaces.length} locked records were left unchanged.`
       );
     } catch {
       setStatus("Backup import failed. Use a valid JSON export from this app.");
@@ -961,6 +822,7 @@ function App() {
 
   async function handleImport(event) {
     event.preventDefault();
+    if (!canEditPerson(activeUserId)) { setStatus("Add your own person or unlock this profile in Settings before importing places."); return; }
 
     const mentions = parseMentions(rawInput);
     if (mentions.length === 0) {
@@ -1006,7 +868,7 @@ function App() {
         const clearLead = !second || best.score - second.score >= AUTO_APPROVE_MIN_LEAD;
 
         if (strongEnough && clearLead) {
-          const candidate = toPlace(best, mention, activeUserId);
+          const candidate = toPlace(best, mention, importOwnerId);
           const key = placeKey(candidate);
 
           if (existingKeys.has(key)) {
@@ -1109,7 +971,7 @@ function App() {
   }
 
   function removePlace(id) {
-    if (publishedIds.has(id)) return;
+    if (!canEditPerson(placesById.get(id)?.userId)) return;
     if (selectedPlaceId === id) {
       setSelectedPlaceId("");
       setMapFocus(null);
@@ -1132,7 +994,7 @@ function App() {
   }
 
   function startEditPlace(place) {
-    if (!place || publishedIds.has(place.id)) return;
+    if (!place || !canEditPerson(place.userId)) return;
     setEditingPlaceId(place.id);
     setEditDraft({
       name: place.name || "",
@@ -1157,7 +1019,7 @@ function App() {
   }
 
   async function saveEditPlace(id) {
-    if (publishedIds.has(id)) return;
+    if (!canEditPerson(placesById.get(id)?.userId)) return;
     const nextName = String(editDraft.name || "").trim();
     if (!nextName) {
       setStatus("Place name cannot be empty.");
@@ -1374,6 +1236,7 @@ function App() {
     const selected = getSelectedOption(item);
     if (!selected) return;
 
+    if (!canEditPerson(item.ownerUserId || activeUserId)) { setStatus("Unlock this person before adding places."); return; }
     const candidate = toPlace(selected, item.mention, item.ownerUserId || activeUserId);
     commitPlaces((prev) => mergePlaces(prev, [candidate]));
     setReviewQueue((prev) => prev.filter((entry) => entry.id !== id));
@@ -1383,7 +1246,7 @@ function App() {
     const candidates = reviewQueue
       .map((item) => {
         const selected = getSelectedOption(item);
-        return selected ? toPlace(selected, item.mention, item.ownerUserId || activeUserId) : null;
+        return selected && canEditPerson(item.ownerUserId || activeUserId) ? toPlace(selected, item.mention, item.ownerUserId || activeUserId) : null;
       })
       .filter(Boolean);
 
@@ -1481,6 +1344,7 @@ function App() {
     const selected = getSelectedOption(item);
     if (!selected) return;
 
+    if (!canEditPerson(item.ownerUserId || activeUserId)) { setStatus("Unlock this person before adding places."); return; }
     const candidate = toPlace(selected, item.mention, item.ownerUserId || activeUserId);
     commitPlaces((prev) => mergePlaces(prev, [candidate]));
     setUnmatchedQueue((prev) => prev.filter((entry) => entry.id !== id));
@@ -1533,9 +1397,9 @@ function App() {
       <header className="app-header">
         <a className="brand" href="/" aria-label="Places home"><span className="brand-mark" aria-hidden="true">◎</span> places<span className="brand-period">.</span></a>
         <span className="header-caption">A PERSONAL ATLAS</span>
-        <div className="header-actions"><span className="storage-label" role="status">{memoryStatus}</span><button type="button" onClick={() => setActiveTool("import")}>+ Add places</button></div>
+        <div className="header-actions"><span className="storage-label" role="status">{memoryStatus}</span><button type="button" onClick={() => scrollToSection(reviewSectionRef)}>+ Add places</button></div>
       </header>
-      <section className="panel">
+      <section className="panel" id="collection-panel" aria-label="People and places">
         <div className="panel-intro"><p className="eyebrow">YOUR COLLECTION</p><h1>A life of places.</h1><p className="subtitle">Every stop has a story. Keep yours here.</p></div>
         {/failed|unavailable/i.test(dataModelSummary) && <p className="service-notice" role="status">The starter atlas couldn’t load. Your saved places are still available. Refresh to try again.</p>}
         <div className="profile-switcher">
@@ -1549,10 +1413,12 @@ function App() {
           </select>
           <div className="person-legend" aria-label="People and map colors">{sortedUsers.map(user => <span key={user.id}><i style={{ backgroundColor: user.color }} aria-hidden="true" />{user.name}</span>)}</div>
           <div className="profile-row">
-            <input aria-label="New person name" value={newUserName} onChange={event => setNewUserName(event.target.value)} placeholder="Add another person" />
-            <button type="button" onClick={addUserProfile}>Add person</button>
+            <input aria-label="New person name" maxLength={60} value={newUserName} onChange={event => setNewUserName(event.target.value)} placeholder="Add another person" />
+            <button type="button" onClick={addUserProfile} disabled={creatingPerson || !newUserName.trim()}>{creatingPerson ? "Creating…" : "Add person"}</button>
           </div>
-          <p className="places-subtext">New places are added for {activeUser?.name || "Saboor"}. Other people’s places stay on this device; export a backup to keep them.</p>
+          <p className="places-subtext">{canEditPerson(activeUserId) ? `Adding places for ${activeUser?.name}. Updates save to cloud automatically and are visible to everyone.` : `${activeUser?.name || "Saboor"}’s collection is read only. Add yourself or unlock editing in Settings.`}</p>
+          {!canEditPerson(activeUserId) && <button type="button" className="secondary" onClick={enableProfileCloud} disabled={creatingPerson}>{cloudPeople.has(activeUserId) ? "Unlock editing" : "Enable cloud saving"}</button>}
+          <p className="sync-status" role="status">{memoryStatus}</p>
         </div>
         <nav className="tool-nav" aria-label="Atlas tools">
           {[["explore", "Places"], ["import", "Import"], ["guide", "Guide"], ["settings", "Settings"]].map(([id, label]) => (
@@ -1564,18 +1430,24 @@ function App() {
           <p className="places-subtext">Cloud memory, backups, and map preferences.</p>
           <div className="option-grid">
             <div className="option-group">
-              <span className="option-label">Cloud memory · Saboor</span>
-              <p className="places-subtext">Saboor’s published collection is visible to everyone, including dates and notes. The private key is only needed for Saboor’s additional cloud records; other profiles save on this device.</p>
+              <span className="option-label">Cloud storage & editing access</span>
+              <p className="places-subtext">Everyone can view the atlas. Each person’s editing key unlocks only their own records. Saboor requires the owner’s existing private key. Keep your key to edit on another device.</p>
               <div className="profile-row">
                 <input className="profile-input" type="password" aria-label="Private editing key" placeholder="Private editing key" autoComplete="off" value={editingKey} onChange={event => setEditingKey(event.target.value)} />
-                <button type="button" onClick={unlockMemory} disabled={unlockBusy || !editingKey.trim()}>{unlockBusy ? "Unlocking…" : "Unlock atlas"}</button>
+                <button type="button" onClick={unlockMemory} disabled={unlockBusy || !editingKey.trim()}>{unlockBusy ? "Unlocking…" : "Unlock editing"}</button>
               </div>
               <p className="places-subtext" role="status">{memoryStatus}</p>
               <div className="profile-row profile-actions">
                 <button type="button" className="secondary" onClick={() => atlasRef.current?.load()}>Retry sync</button>
                 <button type="button" className="secondary" onClick={reloadCloudMemory}>Reload cloud</button>
-                <button type="button" className="secondary" onClick={() => atlasRef.current?.lock()}>Lock cloud access</button>
+                <button type="button" className="secondary" onClick={() => { if (atlasRef.current?.lock(activeUserId)) { setRecoveryVisible(false); cancelEditPlace(); } }}>Lock this person</button>
               </div>
+              {canEditPerson(activeUserId) && <div className="recovery-key">
+                <label htmlFor="recovery-key">Editing key for {activeUser?.name}</label>
+                <input id="recovery-key" type={recoveryVisible ? "text" : "password"} readOnly value={atlasRef.current?.keys[activeUserId] || ""} autoComplete="off" spellCheck={false} />
+                <button type="button" className="secondary" onClick={() => setRecoveryVisible(value => !value)}>{recoveryVisible ? "Hide editing key" : "Show editing key"}</button>
+                <p className="places-subtext">Store this key privately. Anyone with it can edit this person’s places. Backups do not include editing keys.</p>
+              </div>}
               <div className="profile-row profile-actions">
                 <button type="button" className="secondary" onClick={exportBackup}>
                   Export Backup
@@ -1593,46 +1465,7 @@ function App() {
               </div>
             </div>
 
-            {CLOUD_SYNC_ENABLED && (
-              <div className="option-group">
-                <span className="option-label">Cloud Sync</span>
-                <div className="profile-row">
-                  <input
-                    type="text"
-                    value={cloudSpaceKey}
-                    onChange={(event) => setCloudSpaceKey(event.target.value)}
-                    placeholder="Shared cloud space key"
-                  />
-                  <button
-                    type="button"
-                    className={cloudAutoSync ? "" : "secondary"}
-                    onClick={() => setCloudAutoSync((prev) => !prev)}
-                    title="Toggle automatic cloud save"
-                  >
-                    Auto {cloudAutoSync ? "On" : "Off"}
-                  </button>
-                </div>
-                <div className="profile-row profile-actions">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={handleCloudLoad}
-                    disabled={!cloudSyncReady || isCloudBusy}
-                  >
-                    {isCloudBusy ? "Syncing..." : "Load Cloud"}
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => handleCloudSave("manual")}
-                    disabled={!cloudSyncReady || isCloudBusy}
-                  >
-                    Save Cloud
-                  </button>
-                </div>
-                <p className="places-subtext cloud-status">{cloudSyncStatus}</p>
-              </div>
-            )}
+
 
             <div className="option-group">
               <span className="option-label">Group List</span>
@@ -2155,7 +1988,7 @@ function App() {
                             )}
                           </div>
                           <div className="place-actions">
-                            {publishedIds.has(place.id) ? <span className="place-meta">Public collection</span> : <>
+                            {!canEditPerson(place.userId) ? <span className="place-lock" title="Only this person’s editing key can unlock changes">Read only</span> : <>
                             <button
                               type="button"
                               className="secondary"
@@ -2188,7 +2021,7 @@ function App() {
         </div>
       </section>
 
-      <section className={`map-wrap map-shape-${mapShape}`} aria-label="Your world map">
+      <section id="world-map" className={`map-wrap map-shape-${mapShape}`} aria-label="Your world map">
         <div className="map-heading"><div><p className="eyebrow">THE WORLD, THROUGH YOUR EYES</p><h2>Your world, mapped.</h2><p>{showAllUsers ? "Everyone’s" : `${scopeLabel}’s`} journeys, all in one place.</p></div>
           <div className="map-view-toggle segmented" aria-label="Map view"><button type="button" className={mapShape === "orbital" ? "active" : ""} aria-pressed={mapShape === "orbital"} onClick={() => setMapShape("orbital")}>Globe</button><button type="button" className={mapShape === "panel" ? "active" : ""} aria-pressed={mapShape === "panel"} onClick={() => setMapShape("panel")}>Map</button></div>
         </div>
@@ -2225,6 +2058,7 @@ function App() {
         </MapBoundary>
         <div className="map-footer"><span>{mapShape === "orbital" ? "AN ATLAS IN MOTION" : "A DIFFERENT PERSPECTIVE"}</span><span>Drag to explore · Select a place to discover</span></div>
       </section>
+      <nav className="mobile-jump" aria-label="Jump to section"><a href="#world-map">Explore map</a><a href="#collection-panel">People & places</a></nav>
     </main>
   );
 }
@@ -2284,11 +2118,14 @@ function LeafletMap({
     map.on("zoomend", onZoomEnd);
 
     const onResize = () => map.invalidateSize();
+    const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(onResize) : null;
+    if (resizeObserver) resizeObserver.observe(hostRef.current);
     window.addEventListener("resize", onResize);
 
     return () => {
       map.off("zoomend", onZoomEnd);
       window.removeEventListener("resize", onResize);
+      resizeObserver?.disconnect();
       map.remove();
       mapRef.current = null;
       pathLayerRef.current = null;
@@ -2479,6 +2316,14 @@ function GlobeMap({
   userColorById,
   onPlaceSelect
 }) {
+  const [Globe, setGlobe] = useState(null);
+  const [engineError, setEngineError] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    import("globe.gl").then(module => { if (!cancelled) setGlobe(() => module.default); })
+      .catch(error => { if (!cancelled) setEngineError(error); });
+    return () => { cancelled = true; };
+  }, []);
   const hostRef = useRef(null);
   const globeRef = useRef(null);
   const onPlaceSelectRef = useRef(onPlaceSelect);
@@ -2625,7 +2470,7 @@ function GlobeMap({
     controls.maxDistance = 600;
     controls.zoomSpeed = 0.95;
     controls.rotateSpeed = 0.7;
-    controls.autoRotate = true;
+    controls.autoRotate = !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     controls.autoRotateSpeed = orbitalAutoRotateSpeedForStyle(mapStyleRef.current);
     const renderer = typeof globe.renderer === "function" ? globe.renderer() : null;
     rendererRef.current = renderer;
@@ -2657,6 +2502,17 @@ function GlobeMap({
       resizeObserver.observe(hostRef.current);
     }
     window.addEventListener("resize", resize);
+    let inView = true;
+    const updateAnimation = () => {
+      if (document.hidden || !inView) globe.pauseAnimation?.();
+      else globe.resumeAnimation?.();
+    };
+    const intersection = typeof IntersectionObserver === "function" ? new IntersectionObserver(entries => {
+      inView = entries[0]?.isIntersecting !== false; updateAnimation();
+    }) : null;
+    intersection?.observe(hostRef.current);
+    document.addEventListener("visibilitychange", updateAnimation);
+    updateAnimation();
 
     globe.pointOfView(ORBITAL_DEFAULT_VIEW, 0);
     syncOrbitalZoom(ORBITAL_DEFAULT_VIEW.altitude);
@@ -2667,6 +2523,8 @@ function GlobeMap({
         zoomSyncRafRef.current = 0;
       }
       window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", updateAnimation);
+      intersection?.disconnect();
       controls.removeEventListener("change", onControlsChange);
       if (resizeObserver) {
         resizeObserver.disconnect();
@@ -2677,7 +2535,7 @@ function GlobeMap({
       globeRef.current = null;
       rendererRef.current = null;
     };
-  }, []);
+  }, [Globe]);
 
   useEffect(() => {
     const globe = globeRef.current;
@@ -2699,7 +2557,7 @@ function GlobeMap({
     if (rendererRef.current && typeof rendererRef.current.setPixelRatio === "function") {
       rendererRef.current.setPixelRatio(orbitalPixelRatioForStyle(mapStyle));
     }
-  }, [mapStyle]);
+  }, [Globe, mapStyle]);
 
   useEffect(() => {
     const globe = globeRef.current;
@@ -2755,7 +2613,7 @@ function GlobeMap({
     globe.pointsData(points);
     globe.arcsData(arcs);
 
-  }, [pointPlaces, pathMode, mapStyle, userColorById, useUserColor]);
+  }, [Globe, pointPlaces, pathMode, mapStyle, userColorById, useUserColor]);
 
   useEffect(() => {
     const globe = globeRef.current;
@@ -2772,7 +2630,7 @@ function GlobeMap({
 
     globe.pointOfView(overview, 980);
     syncOrbitalZoom(overview.altitude);
-  }, [pointPlaces, selectedPlaceId]);
+  }, [Globe, pointPlaces, selectedPlaceId]);
 
   useEffect(() => {
     const globe = globeRef.current;
@@ -2793,7 +2651,7 @@ function GlobeMap({
     } else {
       globe.labelsData([]);
     }
-  }, [activePlace]);
+  }, [Globe, activePlace]);
 
   useEffect(() => {
     const globe = globeRef.current;
@@ -2831,7 +2689,7 @@ function GlobeMap({
       950
     );
     syncOrbitalZoom(ORBITAL_FOCUS_ALTITUDE);
-  }, [focusTarget, places]);
+  }, [Globe, focusTarget, places]);
 
   useEffect(() => {
     const globe = globeRef.current;
@@ -2839,12 +2697,13 @@ function GlobeMap({
     const controls = globe.controls();
     if (!controls) return;
     controls.enableZoom = !selectedPlaceId;
-  }, [selectedPlaceId]);
+  }, [Globe, selectedPlaceId]);
 
+  if (engineError) throw engineError;
   if (typeof Globe !== "function") {
     return (
       <div className="globe-map map-surface globe-fallback">
-        Globe engine is still loading. Switch to Panel map or refresh.
+        Loading the globe… You can also switch to Map.
       </div>
     );
   }
@@ -2931,7 +2790,7 @@ function resumeGlobeSpin(globe) {
   if (!globe || typeof globe.controls !== "function") return;
   const controls = globe.controls();
   if (!controls) return;
-  controls.autoRotate = true;
+  controls.autoRotate = !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
 function orbitalAutoRotateSpeedForStyle(styleId) {
@@ -3683,7 +3542,7 @@ function toPlace(suggestion, mention, ownerUserId = DEFAULT_LOCAL_USER_ID) {
     suggestion.continent ||
     inferContinent(country, suggestion.countryCode, suggestion.lat, suggestion.lng);
   return {
-    id: crypto.randomUUID(),
+    id: placeIdForOwner(crypto.randomUUID(), ownerUserId),
     eventId: "",
     userId: normalizePlaceOwnerId(ownerUserId),
     cityId: "",
@@ -3728,17 +3587,17 @@ function placeKey(place) {
   return `${ownerId}|${normalizeCompare(place.fullName || place.name)}|${Number(place.lat).toFixed(3)}|${Number(place.lng).toFixed(3)}`;
 }
 
+function placeIdForOwner(value, owner) {
+  const id = String(value || crypto.randomUUID());
+  const userId = normalizePlaceOwnerId(owner);
+  // Imported copies may share an original ID. Keep map selection and edits scoped.
+  return userId === DEFAULT_LOCAL_USER_ID || id.startsWith(`${userId}:`) ? id : `${userId}:${id}`;
+}
+
 function normalizePlaceOwnerId(value, fallback = DEFAULT_LOCAL_USER_ID) {
   const raw = String(value || "").trim();
   if (!raw) return String(fallback || DEFAULT_LOCAL_USER_ID);
   return raw === "user_local" ? "user_saboor" : raw;
-}
-
-function createUserIdFromName(name) {
-  const normalized = normalizeCompare(name).replace(/\s+/g, "_");
-  const safe = normalized.replace(/[^a-z0-9_]/g, "");
-  if (!safe) return "";
-  return safe.startsWith("user_") ? safe : `user_${safe}`;
 }
 
 function prettifyUserId(userId) {
@@ -4309,7 +4168,7 @@ function sanitizePlacesForStorage(value) {
       );
 
       return {
-        id: place.id || crypto.randomUUID(),
+        id: placeIdForOwner(place.id, place.userId),
         eventId: String(place.eventId || ""),
         userId: normalizePlaceOwnerId(place.userId),
         cityId: String(place.cityId || ""),
@@ -4389,158 +4248,6 @@ function loadShowAllUsers() {
 
 function saveShowAllUsers(value) {
   saveStoredString(SHOW_ALL_USERS_STORAGE_KEY, value ? "1" : "0");
-}
-
-function sanitizeCloudSpaceKey(value) {
-  const trimmed = String(value || "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .toLowerCase();
-  if (!trimmed) return "";
-  if (!/^[a-z0-9_-]{3,80}$/.test(trimmed)) return "";
-  return trimmed;
-}
-
-function sanitizeCloudSyncSettings(value) {
-  const input = value && typeof value === "object" ? value : {};
-  return {
-    spaceKey: sanitizeCloudSpaceKey(input.spaceKey) || CLOUD_SYNC_DEFAULT_SPACE_KEY,
-    autoSync: input.autoSync === true || (input.autoSync == null && CLOUD_SYNC_AUTO_SAVE_DEFAULT)
-  };
-}
-
-function loadCloudSyncSettings() {
-  const fallback = {
-    spaceKey: CLOUD_SYNC_DEFAULT_SPACE_KEY,
-    autoSync: CLOUD_SYNC_AUTO_SAVE_DEFAULT
-  };
-
-  try {
-    const raw = localStorage.getItem(CLOUD_SYNC_SETTINGS_STORAGE_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    return sanitizeCloudSyncSettings(parsed);
-  } catch {
-    return fallback;
-  }
-}
-
-function saveCloudSyncSettings(value) {
-  const safe = sanitizeCloudSyncSettings(value);
-  try {
-    localStorage.setItem(CLOUD_SYNC_SETTINGS_STORAGE_KEY, JSON.stringify(safe));
-  } catch {
-    // Ignore storage write failures.
-  }
-}
-
-function buildCloudStatePayload({ users, places }) {
-  return {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    users: normalizeUserDirectory(users || [], places || []),
-    places: sanitizePlacesForStorage(places || [])
-  };
-}
-
-function sanitizeCloudStatePayload(value) {
-  const input = value && typeof value === "object" ? value : {};
-  const places = sanitizePlacesForStorage(input.places || []);
-  const users = normalizeUserDirectory(input.users || [], places);
-  return {
-    version: Number(input.version) > 0 ? Number(input.version) : 1,
-    updatedAt: sanitizeSyncDate(input.updatedAt),
-    users,
-    places
-  };
-}
-
-function sanitizeSyncDate(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const date = new Date(raw);
-  if (!Number.isFinite(date.getTime())) return "";
-  return date.toISOString();
-}
-
-function formatSyncTimestamp(value) {
-  const iso = sanitizeSyncDate(value);
-  if (!iso) return "unknown time";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}
-
-function buildCloudApiUrl(spaceKey) {
-  const safeSpaceKey = sanitizeCloudSpaceKey(spaceKey);
-  if (!safeSpaceKey) {
-    throw new Error("Invalid cloud space key.");
-  }
-
-  const base = CLOUD_SYNC_API_BASE || "";
-  const root = base
-    ? base
-    : typeof window !== "undefined" && window.location
-      ? window.location.origin
-      : "";
-  if (!root) {
-    throw new Error("Cloud API base is not configured.");
-  }
-
-  const url = new URL("/api/state", root);
-  url.searchParams.set("space", safeSpaceKey);
-  return url.toString();
-}
-
-async function fetchCloudStateBySpace(spaceKey) {
-  const url = buildCloudApiUrl(spaceKey);
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json"
-    }
-  });
-  if (!response.ok) {
-    throw new Error(await readHttpError(response));
-  }
-  return response.json();
-}
-
-async function saveCloudStateBySpace(spaceKey, statePayload) {
-  const url = buildCloudApiUrl(spaceKey);
-  const response = await fetch(url, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(sanitizeCloudStatePayload(statePayload))
-  });
-  if (!response.ok) {
-    throw new Error(await readHttpError(response));
-  }
-  return response.json();
-}
-
-async function readHttpError(response) {
-  const fallback = `HTTP ${response?.status || "error"}`;
-  if (!response || typeof response.text !== "function") return fallback;
-  try {
-    const text = await response.text();
-    if (!text) return fallback;
-    try {
-      const parsed = JSON.parse(text);
-      if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
-        return `${fallback}: ${parsed.error.trim()}`;
-      }
-    } catch {
-      // Ignore JSON parsing; return plain text if available.
-    }
-    return `${fallback}: ${text.slice(0, 140)}`;
-  } catch {
-    return fallback;
-  }
 }
 
 function getDefaultUserPreferences() {

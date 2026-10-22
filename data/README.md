@@ -18,12 +18,7 @@ This folder contains both structured JSON entities and runtime config.
 - `app-data.js`: parser/import/geocoder tuning, event bootstrap settings, visual grouping colors.
 - `user-data.js`: local storage keys, migration keys, and user defaults.
 
-`app-data.js` also controls cloud sync behavior:
-- `cloudSync.enabled`
-- `cloudSync.apiBase`
-- `cloudSync.defaultSpaceKey`
-- `cloudSync.autoLoadOnStart`
-- `cloudSync.autoSync`
+Shared cloud storage is implemented in `worker/community.js` and `public/src/communitySync.js`; it is always enabled for the application. The retired KV `cloudSync` configuration is no longer used. `public/data/saboor-atlas.json` contains the approved public initial collection; stored community revisions take precedence after the first cloud load.
 
 ## Typical edits before going live
 - Replace sample rows in JSON files with your own production data.

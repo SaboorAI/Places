@@ -29,7 +29,8 @@ export class AtlasSync {
   write(key, value) { try { this.storage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } }
   status(message) { if (!this.stopped) this.onStatus(message); }
   async request(method, body, key = this.key, path = '/api/atlas') {
-    const response = await this.fetcher(path, {
+    const fetcher = this.fetcher;
+    const response = await fetcher(path, {
       method, cache: 'no-store', signal: AbortSignal.timeout(15000),
       headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {})

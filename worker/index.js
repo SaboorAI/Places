@@ -1,8 +1,11 @@
+import { routeCommunity } from './community.js';
 import { routeAtlas } from "./atlas.js";
 export { AtlasStore } from "./atlas.js";
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/api/community" || url.pathname.startsWith("/api/community/")) return routeCommunity(request, env);
 
     if (url.pathname === "/api/health") {
       return jsonResponse({ ok: true, travelGuide: Boolean(env.ANTHROPIC_API_KEY), cloudStorage: Boolean(env.ATLAS_STORE) }, 200);

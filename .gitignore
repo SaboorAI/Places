@@ -7,3 +7,4 @@ public/build-info.json
 .env*
 public/textures/*.jpg
 public/textures/*.png
+test-results/

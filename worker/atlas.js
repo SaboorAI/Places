@@ -1,3 +1,4 @@
+import { handleCommunity } from './community.js';
 const users = [{ id: 'user_saboor', name: 'Saboor', color: '#ffa96a' }];
 import { OWNER_KEY_HASH } from './owner-key.js';
 
@@ -35,6 +36,7 @@ export class AtlasStore {
   constructor(ctx) { this.ctx = ctx; }
 
   async fetch(request) {
+    if (new URL(request.url).pathname.startsWith('/api/community')) return handleCommunity(this.ctx, request);
     if (!await authorized(request)) return reply({ error: 'Unlock your atlas in Settings with your private key.' }, 401);
     if (request.method === 'GET') {
       return this.ctx.storage.transaction(async txn => {
